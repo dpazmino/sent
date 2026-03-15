@@ -1,0 +1,19 @@
+packages:
+  "recharts": "For rendering complex financial dashboards, trend lines, and dynamic AI-generated graphs"
+  "framer-motion": "For premium page transitions, smooth enter/exit animations, and interactive elements"
+  "date-fns": "For formatting financial timestamps and scan dates easily"
+  "clsx": "Utility for conditionally joining class names"
+  "tailwind-merge": "Utility to merge tailwind classes safely in UI components"
+  "@tanstack/react-table": "For complex data tables like the duplicates list with sorting/filtering"
+
+images:
+  - path: "artifacts/dup-detect/public/images/auth-bg.png"
+    description: "Abstract deep dark blue and slate geographic waves and glowing lines, financial tech data flow concept"
+    aspect_ratio: "16:9"
+  - path: "artifacts/dup-detect/public/images/sidebar-glow.png"
+    description: "Subtle blue to cyan gradient glow for sidebar branding background"
+    aspect_ratio: "1:1"
+
+notes:
+  - "App uses generated hooks from @workspace/api-client-react as per implementation notes"
+  - "Dark mode professional banking theme applied via Tailwind v4 CSS variables"

@@ -1,22 +1,34 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Duplicate Payment Detection System API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: duplicates
+    description: Duplicate payment detection operations
+  - name: dashboard
+    description: Dashboard analytics operations
+  - name: agents
+    description: AI agent operations
+  - name: training
+    description: Agent training operations
+  - name: console
+    description: Master console operations
+  - name: schema
+    description: Data source schema management
+  - name: exports
+    description: Data export operations
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,6 +36,393 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /duplicates:
+    get:
+      operationId: getDuplicatePayments
+      tags: [duplicates]
+      summary: Get list of duplicate payments with probability scores
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: minProbability
+          in: query
+          schema:
+            type: number
+        - name: paymentSystem
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of duplicate payments
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DuplicatePaymentListResponse"
+
+  /duplicates/{id}:
+    get:
+      operationId: getDuplicatePaymentById
+      tags: [duplicates]
+      summary: Get details of a specific duplicate payment pair
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Duplicate payment detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DuplicatePaymentDetail"
+
+  /duplicates/{id}/status:
+    patch:
+      operationId: updateDuplicateStatus
+      tags: [duplicates]
+      summary: Update status of a duplicate payment (confirm/dismiss)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDuplicateStatusBody"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DuplicatePaymentDetail"
+
+  /dashboard/stats:
+    get:
+      operationId: getDashboardStats
+      tags: [dashboard]
+      summary: Get high-level dashboard statistics
+      responses:
+        "200":
+          description: Dashboard statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardStats"
+
+  /dashboard/corridor-analysis:
+    get:
+      operationId: getCorridorAnalysis
+      tags: [dashboard]
+      summary: Get corridor (country-to-country) analysis data
+      parameters:
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+        - name: topN
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Corridor analysis data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CorridorAnalysisResponse"
+
+  /dashboard/trend:
+    get:
+      operationId: getTrendData
+      tags: [dashboard]
+      summary: Get duplicate payment trend over time
+      parameters:
+        - name: period
+          in: query
+          schema:
+            type: string
+            enum: [daily, weekly, monthly]
+            default: daily
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Trend data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrendDataResponse"
+
+  /dashboard/by-system:
+    get:
+      operationId: getDuplicatesBySystem
+      tags: [dashboard]
+      summary: Breakdown of duplicates by payment system
+      responses:
+        "200":
+          description: By-system breakdown
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BySystemResponse"
+
+  /agents/chat:
+    post:
+      operationId: chatWithAgent
+      tags: [agents]
+      summary: Chat with an AI agent (master or detector)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentChatRequest"
+      responses:
+        "200":
+          description: Agent response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentChatResponse"
+
+  /agents/graph-query:
+    post:
+      operationId: graphQuery
+      tags: [agents]
+      summary: Ask the AI to create a graph from natural language query
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GraphQueryRequest"
+      responses:
+        "200":
+          description: Graph specification for rendering
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphQueryResponse"
+
+  /agents/detector-opinions:
+    post:
+      operationId: getDetectorOpinions
+      tags: [agents]
+      summary: Ask all duplicate detector agents to evaluate a list of payments
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DetectorOpinionsRequest"
+      responses:
+        "200":
+          description: Detector agent opinions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DetectorOpinionsResponse"
+
+  /training/sessions:
+    get:
+      operationId: getTrainingSessions
+      tags: [training]
+      summary: Get all training sessions
+      responses:
+        "200":
+          description: List of training sessions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainingSessionListResponse"
+    post:
+      operationId: createTrainingSession
+      tags: [training]
+      summary: Create a new training session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTrainingSessionBody"
+      responses:
+        "200":
+          description: Created session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainingSession"
+
+  /training/sessions/{id}/messages:
+    post:
+      operationId: sendTrainingMessage
+      tags: [training]
+      summary: Send a message in a training session to teach the agent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrainingMessageBody"
+      responses:
+        "200":
+          description: Agent response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainingMessageResponse"
+
+  /training/memory:
+    get:
+      operationId: getAgentMemory
+      tags: [training]
+      summary: Get current agent memory/knowledge base
+      responses:
+        "200":
+          description: Agent memory contents
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentMemoryResponse"
+    delete:
+      operationId: clearAgentMemory
+      tags: [training]
+      summary: Clear all agent memory
+      responses:
+        "200":
+          description: Cleared
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /console/scan:
+    post:
+      operationId: runMasterScan
+      tags: [console]
+      summary: Run master agent scan for duplicate payments (up to 1M)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MasterScanRequest"
+      responses:
+        "200":
+          description: Scan result summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MasterScanResponse"
+
+  /console/scan/status:
+    get:
+      operationId: getScanStatus
+      tags: [console]
+      summary: Get current scan status and progress
+      responses:
+        "200":
+          description: Scan status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanStatusResponse"
+
+  /schema/datasource:
+    get:
+      operationId: getDataSourceSchema
+      tags: [schema]
+      summary: Get the current data source schema definition
+      responses:
+        "200":
+          description: Schema definition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataSourceSchemaResponse"
+    put:
+      operationId: updateDataSourceSchema
+      tags: [schema]
+      summary: Update the data source schema definition
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDataSourceSchemaBody"
+      responses:
+        "200":
+          description: Updated schema
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataSourceSchemaResponse"
+
+  /exports/duplicates:
+    post:
+      operationId: exportDuplicates
+      tags: [exports]
+      summary: Export duplicate payments to CSV or JSON
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExportRequest"
+      responses:
+        "200":
+          description: Export file or download URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -31,6 +430,633 @@ components:
       properties:
         status:
           type: string
-      required:
-        - status
+      required: [status]
 
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+      required: [success]
+
+    DuplicatePayment:
+      type: object
+      properties:
+        id:
+          type: string
+        payment1Id:
+          type: string
+        payment2Id:
+          type: string
+        probability:
+          type: number
+          description: 0.0 to 1.0 probability this is a true duplicate
+        duplicateType:
+          type: string
+          description: Type of duplicate (exact_match, fuzzy_match, multi_source, etc.)
+        paymentSystem:
+          type: string
+          description: SWIFT_MT, SWIFT_MX, ACH, INTERNAL
+        amount:
+          type: number
+        currency:
+          type: string
+        senderBIC:
+          type: string
+        receiverBIC:
+          type: string
+        originatorCountry:
+          type: string
+        beneficiaryCountry:
+          type: string
+        paymentDate1:
+          type: string
+        paymentDate2:
+          type: string
+        status:
+          type: string
+          description: pending, confirmed_duplicate, dismissed, under_review
+        matchedFields:
+          type: array
+          items:
+            type: string
+        detectedAt:
+          type: string
+        notes:
+          type: string
+      required:
+        - id
+        - payment1Id
+        - payment2Id
+        - probability
+        - duplicateType
+        - paymentSystem
+        - amount
+        - currency
+        - status
+        - detectedAt
+
+    DuplicatePaymentListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DuplicatePayment"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+        totalPages:
+          type: integer
+      required: [items, total, page, limit, totalPages]
+
+    DuplicatePaymentDetail:
+      allOf:
+        - $ref: "#/components/schemas/DuplicatePayment"
+        - type: object
+          properties:
+            payment1Details:
+              type: object
+              additionalProperties: true
+            payment2Details:
+              type: object
+              additionalProperties: true
+            agentExplanations:
+              type: array
+              items:
+                $ref: "#/components/schemas/AgentExplanation"
+
+    AgentExplanation:
+      type: object
+      properties:
+        agentName:
+          type: string
+        explanation:
+          type: string
+        confidence:
+          type: number
+      required: [agentName, explanation, confidence]
+
+    UpdateDuplicateStatusBody:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [confirmed_duplicate, dismissed, under_review, pending]
+        notes:
+          type: string
+      required: [status]
+
+    DashboardStats:
+      type: object
+      properties:
+        totalDuplicatesFound:
+          type: integer
+        highProbabilityCount:
+          type: integer
+        mediumProbabilityCount:
+          type: integer
+        lowProbabilityCount:
+          type: integer
+        totalAmountAtRisk:
+          type: number
+        confirmedDuplicates:
+          type: integer
+        pendingReview:
+          type: integer
+        dismissedCount:
+          type: integer
+        byPaymentSystem:
+          type: object
+          additionalProperties:
+            type: integer
+        lastScanAt:
+          type: string
+        scanCoverage:
+          type: integer
+      required:
+        - totalDuplicatesFound
+        - highProbabilityCount
+        - mediumProbabilityCount
+        - lowProbabilityCount
+        - totalAmountAtRisk
+        - confirmedDuplicates
+        - pendingReview
+        - dismissedCount
+
+    CorridorDataPoint:
+      type: object
+      properties:
+        originCountry:
+          type: string
+        destCountry:
+          type: string
+        corridor:
+          type: string
+        duplicateCount:
+          type: integer
+        totalAmount:
+          type: number
+        avgProbability:
+          type: number
+      required: [originCountry, destCountry, corridor, duplicateCount, totalAmount, avgProbability]
+
+    CorridorAnalysisResponse:
+      type: object
+      properties:
+        corridors:
+          type: array
+          items:
+            $ref: "#/components/schemas/CorridorDataPoint"
+        totalCorridors:
+          type: integer
+      required: [corridors, totalCorridors]
+
+    TrendDataPoint:
+      type: object
+      properties:
+        date:
+          type: string
+        count:
+          type: integer
+        amount:
+          type: number
+        avgProbability:
+          type: number
+      required: [date, count, amount, avgProbability]
+
+    TrendDataResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrendDataPoint"
+        period:
+          type: string
+      required: [data, period]
+
+    SystemDataPoint:
+      type: object
+      properties:
+        system:
+          type: string
+        count:
+          type: integer
+        amount:
+          type: number
+        percentage:
+          type: number
+      required: [system, count, amount, percentage]
+
+    BySystemResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/SystemDataPoint"
+      required: [data]
+
+    AgentChatRequest:
+      type: object
+      properties:
+        message:
+          type: string
+        agentType:
+          type: string
+          enum: [master, detector, text_to_sql]
+          default: master
+        conversationId:
+          type: string
+      required: [message]
+
+    AgentChatResponse:
+      type: object
+      properties:
+        response:
+          type: string
+        conversationId:
+          type: string
+        agentType:
+          type: string
+        sqlGenerated:
+          type: string
+        dataReturned:
+          type: object
+          additionalProperties: true
+      required: [response, conversationId, agentType]
+
+    GraphQueryRequest:
+      type: object
+      properties:
+        query:
+          type: string
+          description: Natural language request for a graph (e.g. "show me corridor analysis for SWIFT payments")
+        conversationId:
+          type: string
+      required: [query]
+
+    ChartDataset:
+      type: object
+      properties:
+        label:
+          type: string
+        data:
+          type: array
+          items: {}
+        backgroundColor:
+          type: array
+          items:
+            type: string
+        borderColor:
+          type: array
+          items:
+            type: string
+      required: [label, data]
+
+    GraphSpec:
+      type: object
+      properties:
+        chartType:
+          type: string
+          enum: [bar, line, pie, scatter, heatmap, sankey]
+        title:
+          type: string
+        labels:
+          type: array
+          items:
+            type: string
+        datasets:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChartDataset"
+        xAxisLabel:
+          type: string
+        yAxisLabel:
+          type: string
+      required: [chartType, title, labels, datasets]
+
+    GraphQueryResponse:
+      type: object
+      properties:
+        graphSpec:
+          $ref: "#/components/schemas/GraphSpec"
+        explanation:
+          type: string
+        sqlUsed:
+          type: string
+        conversationId:
+          type: string
+      required: [graphSpec, explanation, conversationId]
+
+    DetectorOpinionsRequest:
+      type: object
+      properties:
+        paymentIds:
+          type: array
+          items:
+            type: string
+          description: IDs of duplicate payment records to evaluate
+        maxItems:
+          type: integer
+          default: 100
+      required: [paymentIds]
+
+    DetectorOpinion:
+      type: object
+      properties:
+        paymentId:
+          type: string
+        agentName:
+          type: string
+        isDuplicate:
+          type: boolean
+        confidence:
+          type: number
+        reasoning:
+          type: string
+        duplicateType:
+          type: string
+      required: [paymentId, agentName, isDuplicate, confidence, reasoning]
+
+    DetectorOpinionsResponse:
+      type: object
+      properties:
+        opinions:
+          type: array
+          items:
+            $ref: "#/components/schemas/DetectorOpinion"
+        consensus:
+          type: object
+          additionalProperties:
+            type: number
+      required: [opinions, consensus]
+
+    TrainingSession:
+      type: object
+      properties:
+        id:
+          type: string
+        trainingType:
+          type: string
+          enum: [database_schema, duplicate_definition, general]
+        title:
+          type: string
+        createdAt:
+          type: string
+        messageCount:
+          type: integer
+        lastMessageAt:
+          type: string
+      required: [id, trainingType, title, createdAt, messageCount]
+
+    TrainingSessionListResponse:
+      type: object
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrainingSession"
+      required: [sessions]
+
+    CreateTrainingSessionBody:
+      type: object
+      properties:
+        trainingType:
+          type: string
+          enum: [database_schema, duplicate_definition, general]
+        title:
+          type: string
+      required: [trainingType, title]
+
+    TrainingMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+        timestamp:
+          type: string
+      required: [role, content, timestamp]
+
+    TrainingMessageBody:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+
+    TrainingMessageResponse:
+      type: object
+      properties:
+        response:
+          type: string
+        memorySaved:
+          type: boolean
+        memoryKey:
+          type: string
+      required: [response, memorySaved]
+
+    MemoryEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        category:
+          type: string
+          enum: [database_schema, duplicate_definition, general]
+        key:
+          type: string
+        content:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required: [id, category, key, content, createdAt, updatedAt]
+
+    AgentMemoryResponse:
+      type: object
+      properties:
+        memories:
+          type: array
+          items:
+            $ref: "#/components/schemas/MemoryEntry"
+        totalEntries:
+          type: integer
+      required: [memories, totalEntries]
+
+    MasterScanRequest:
+      type: object
+      properties:
+        maxPayments:
+          type: integer
+          default: 1000000
+          description: Max payments to scan (up to 1 million)
+        paymentSystems:
+          type: array
+          items:
+            type: string
+          description: Filter by payment systems (SWIFT_MT, SWIFT_MX, ACH, INTERNAL)
+        dateFrom:
+          type: string
+        dateTo:
+          type: string
+        useAllDetectors:
+          type: boolean
+          default: false
+          description: If true, consult all detector agents after scan
+      required: []
+
+    MasterScanResponse:
+      type: object
+      properties:
+        scanId:
+          type: string
+        status:
+          type: string
+          enum: [running, completed, failed]
+        paymentsScanned:
+          type: integer
+        duplicatesFound:
+          type: integer
+        startedAt:
+          type: string
+        completedAt:
+          type: string
+        message:
+          type: string
+      required: [scanId, status, paymentsScanned, duplicatesFound, startedAt]
+
+    ScanStatusResponse:
+      type: object
+      properties:
+        scanId:
+          type: string
+        status:
+          type: string
+        progress:
+          type: number
+          description: 0.0 to 1.0
+        paymentsScanned:
+          type: integer
+        duplicatesFound:
+          type: integer
+        startedAt:
+          type: string
+        completedAt:
+          type: string
+        currentPhase:
+          type: string
+      required: [status, progress, paymentsScanned, duplicatesFound]
+
+    DataSourceTable:
+      type: object
+      properties:
+        tableName:
+          type: string
+        description:
+          type: string
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/DataSourceColumn"
+      required: [tableName, columns]
+
+    DataSourceColumn:
+      type: object
+      properties:
+        columnName:
+          type: string
+        dataType:
+          type: string
+        description:
+          type: string
+        isPrimaryKey:
+          type: boolean
+        isForeignKey:
+          type: boolean
+        isNullable:
+          type: boolean
+        exampleValues:
+          type: array
+          items:
+            type: string
+      required: [columnName, dataType]
+
+    DataSourceSchemaResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        tables:
+          type: array
+          items:
+            $ref: "#/components/schemas/DataSourceTable"
+        connectionHint:
+          type: string
+        updatedAt:
+          type: string
+      required: [id, name, tables]
+
+    UpdateDataSourceSchemaBody:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        tables:
+          type: array
+          items:
+            $ref: "#/components/schemas/DataSourceTable"
+        connectionHint:
+          type: string
+      required: [name, tables]
+
+    ExportRequest:
+      type: object
+      properties:
+        format:
+          type: string
+          enum: [csv, json]
+          default: csv
+        filters:
+          type: object
+          properties:
+            minProbability:
+              type: number
+            paymentSystem:
+              type: string
+            status:
+              type: string
+            dateFrom:
+              type: string
+            dateTo:
+              type: string
+      required: [format]
+
+    ExportResponse:
+      type: object
+      properties:
+        downloadUrl:
+          type: string
+        filename:
+          type: string
+        recordCount:
+          type: integer
+        format:
+          type: string
+      required: [downloadUrl, filename, recordCount, format]
