@@ -66,13 +66,61 @@ async def list_agents():
     return {"agents": ALL_AGENTS}
 
 
+import re as _re
+
+def _extract_distilled_rule(text: str) -> str:
+    """
+    Pull the clean rule out of a stored memory record.
+    Handles both old format (verbose conversation log) and new format (clean rule string).
+    Priority:
+      1. "Rule: ..." prefix (new format)
+      2. "I'll remember: ..." clause inside Agent response
+      3. Raw content up to 300 chars
+    """
+    # New format: starts with "Rule: "
+    m = _re.search(r"(?:^|\n)Rule:\s*(.+?)(?:\n|$)", text, _re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    # Old format: extract from Agent response
+    agent_resp = _re.search(r"Agent response: '(.*?)'", text, _re.DOTALL)
+    if agent_resp:
+        inner = agent_resp.group(1)
+        remember = _re.search(r"I[''\u2019]ll remember:?\s*(.+?)(?:\n|$)", inner, _re.IGNORECASE)
+        if remember:
+            return remember.group(1).strip()
+        return inner[:250]
+    # Analyst said field only
+    analyst = _re.search(r"Analyst said: '(.*?)'", text)
+    if analyst:
+        return analyst.group(1).strip()
+    return text[:250]
+
+
+def _format_analyst_rules(memories: list) -> str:
+    """
+    Format a list of AgentMemoryRecord objects as clear, prioritised rules
+    suitable for injection into a system prompt.
+    """
+    if not memories:
+        return ""
+    lines = []
+    for m in memories:
+        rule = _extract_distilled_rule(m.content)
+        # Add lightweight payment-system context parsed from the key
+        ctx_match = _re.search(r"review_([A-Z_]+)_([a-z_]+)_", m.key)
+        ctx = f"[{ctx_match.group(1)}/{ctx_match.group(2)}] " if ctx_match else ""
+        lines.append(f"• {ctx}{rule}")
+    return "\n".join(lines)
+
+
 def get_memory_context(db: Session) -> str:
     memories = db.query(AgentMemoryRecord).order_by(AgentMemoryRecord.updated_at.desc()).limit(20).all()
     if not memories:
         return ""
     parts = []
     for m in memories:
-        parts.append(f"[{m.category}] {m.key}: {m.content[:300]}")
+        rule = _extract_distilled_rule(m.content)
+        parts.append(f"[{m.category}] {rule}")
     return "\n".join(parts)
 
 
@@ -286,19 +334,22 @@ async def payment_review(body: dict, db: Session = Depends(get_db)):
 
     history = get_conversation_history(conversation_id, db)
 
-    # Load memory context
+    # Load memory — format as clear, prioritised analyst rules
     dup_def_memories = db.query(AgentMemoryRecord).filter(
         AgentMemoryRecord.category == "duplicate_definition"
-    ).all()
-    memory_context = "\n".join(f"{m.key}: {m.content}" for m in dup_def_memories)
+    ).order_by(AgentMemoryRecord.updated_at.desc()).limit(20).all()
+    analyst_rules = _format_analyst_rules(dup_def_memories)
+    analyst_rules_section = (
+        "ANALYST-CONFIRMED RULES (THESE OVERRIDE YOUR GENERAL KNOWLEDGE — apply them explicitly):\n"
+        + analyst_rules
+    ) if analyst_rules else ""
 
     # --- FIRST CALL: consult all 5 detector agents and synthesise ---
     detector_opinions = None
     if not message:
-        opinions_result = await get_all_detector_opinions([payment_data], memory_context)
+        opinions_result = await get_all_detector_opinions([payment_data], analyst_rules)
         detector_opinions = opinions_result.get("opinions", [])
 
-        # Build a rich synthesis prompt
         opinions_summary = ""
         for op in detector_opinions:
             agent_name = op.get("agentName", "Unknown")
@@ -309,16 +360,15 @@ async def payment_review(body: dict, db: Session = Depends(get_db)):
             opinions_summary += f"\n**{agent_name}** ({confidence}% confidence) — {verdict}\n{reasoning}\n"
 
         matched_fields_str = ", ".join(record.matched_fields or [])
-        memory_section = ("Memory / Previously Learned Rules:\n" + memory_context) if memory_context else ""
 
         system_prompt = f"""You are a Payment Review Training Agent helping an analyst decide if a flagged payment pair is genuinely a duplicate.
 
-You have received opinions from 5 specialist detector agents about this payment pair. Present their findings clearly, give your own synthesised assessment, then invite the analyst to agree or disagree.
+Your job: present the detector agent findings clearly, apply any analyst-confirmed rules explicitly, give your synthesised assessment, then invite the analyst to agree or disagree.
 
-If the analyst agrees and explains why, thank them and save that reasoning.
-If the analyst disagrees and explains why, acknowledge their correction with "I understand — I'll remember that" and confirm you are saving their rule.
+If the analyst agrees and explains why, confirm with "I'll remember: [one-sentence rule]" and explain how this rule will be applied in future.
+If the analyst disagrees, acknowledge their correction with "I understand — I'll remember: [corrected rule]" and confirm you are updating your knowledge.
 
-Always be concise, professional, and payment-domain accurate.
+Be concise, professional, and payment-domain accurate. When a previously confirmed rule applies to this payment, SAY SO explicitly (e.g. "As you previously noted, AUD currency is relevant here...").
 
 Payment Record:
 - IDs: {record.payment1_id} <-> {record.payment2_id}
@@ -327,13 +377,12 @@ Payment Record:
 - Sender BIC: {record.sender_bic} | Receiver BIC: {record.receiver_bic}
 - Payment Dates: {record.payment_date1} / {record.payment_date2}
 - Matched Fields: {matched_fields_str}
-- Current Status: {record.status}
 - Probability Score: {round(record.probability * 100, 1)}%
 
 Detector Agent Opinions:
 {opinions_summary}
 
-{memory_section}
+{analyst_rules_section}
 """
         initial_user_msg = "Please analyse this duplicate payment pair and summarise what each detector agent found."
         messages = [
@@ -342,16 +391,19 @@ Detector Agent Opinions:
         ]
     else:
         # --- SUBSEQUENT CALLS: continue conversation ---
-        memory_section = ("Memory / Previously Learned Rules:\n" + memory_context) if memory_context else ""
-        system_prompt = f"""You are a Payment Review Training Agent helping an analyst decide if a flagged payment pair is genuinely a duplicate.
+        system_prompt = f"""You are a Payment Review Training Agent in an ongoing review session.
 
-Payment Record being reviewed: {record.payment1_id} <-> {record.payment2_id} ({record.payment_system}, {record.amount} {record.currency}, {record.duplicate_type})
+Payment Record: {record.payment1_id} <-> {record.payment2_id} ({record.payment_system}, {record.amount} {record.currency}, {record.duplicate_type})
 
-When the analyst agrees with a duplicate finding, acknowledge and confirm you are saving their reasoning as a rule.
-When the analyst disagrees, acknowledge their correction and confirm you are saving that exception as a rule.
-Always confirm what you learned in structured form: "I'll remember: [rule summary]"
+{analyst_rules_section}
 
-{memory_section}
+When the analyst asks whether a specific factor (e.g. currency, date, amount) is relevant:
+1. Check if any analyst-confirmed rule mentions that factor.
+2. If yes — reference the rule EXPLICITLY: "Based on your earlier guidance that [rule], yes [factor] is relevant because..."
+3. If no rule covers it — give your general assessment, then ask if the analyst wants to add a rule.
+
+When the analyst confirms a duplicate, respond: "I'll remember: [one-sentence rule]"
+When the analyst corrects you, respond: "I understand — I'll remember: [corrected one-sentence rule]"
 """
         messages = [{"role": "system", "content": system_prompt}]
         for h in history[-20:]:
@@ -392,17 +444,40 @@ Always confirm what you learned in structured form: "I'll remember: [rule summar
             "agree", "disagree", "correct", "incorrect", "wrong", "right",
             "not a duplicate", "is a duplicate", "because", "reason", "explain",
             "this is", "this isn't", "should not", "should be", "remember",
+            "aud", "usd", "eur", "gbp", "currency", "amount",
         ])
         if is_feedback:
             words = message.split()[:6]
             memory_key = f"review_{record.payment_system}_{record.duplicate_type}_{'_'.join(w.lower() for w in words if len(w) > 2)[:40]}"
-            db.add(AgentMemoryRecord(
-                id=str(uuid.uuid4()),
-                category="duplicate_definition",
-                key=memory_key,
-                content=f"Analyst reviewed {record.payment1_id}↔{record.payment2_id} ({record.payment_system}/{record.duplicate_type}). Analyst said: '{message}'. Agent response: '{response_text[:400]}'",
-                updated_at=datetime.now(timezone.utc),
-            ))
+
+            # Extract the clean distilled rule the agent stated ("I'll remember: ...")
+            remember_match = _re.search(
+                r"I[''\u2019]ll remember:?\s*(.+?)(?:\n|$)",
+                response_text,
+                _re.IGNORECASE,
+            )
+            distilled_rule = remember_match.group(1).strip() if remember_match else response_text[:200]
+
+            # Save as clean "Rule: ..." format so _extract_distilled_rule() picks it up perfectly
+            clean_content = (
+                f"Rule: {distilled_rule}\n"
+                f"Context: {record.payment_system}/{record.duplicate_type}, "
+                f"analyst said: '{message[:200]}'"
+            )
+
+            # Check if a record with this key already exists; if so, update it
+            existing = db.query(AgentMemoryRecord).filter(AgentMemoryRecord.key == memory_key).first()
+            if existing:
+                existing.content = clean_content
+                existing.updated_at = datetime.now(timezone.utc)
+            else:
+                db.add(AgentMemoryRecord(
+                    id=str(uuid.uuid4()),
+                    category="duplicate_definition",
+                    key=memory_key,
+                    content=clean_content,
+                    updated_at=datetime.now(timezone.utc),
+                ))
             memory_saved = True
 
     db.commit()

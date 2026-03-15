@@ -293,10 +293,10 @@ function ReviewModal({ item, onClose }: { item: DuplicateItem; onClose: () => vo
                 <div className="mx-3 mb-3">
                   <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Detector Agent Verdicts</p>
                   <div className="space-y-1.5">
-                    {opinions.map(op => {
+                    {opinions.map((op, idx) => {
                       const Icon = DETECTOR_ICONS[op.agentName] ?? Brain;
                       return (
-                        <div key={op.agentName} className={`flex items-start gap-2 p-2 rounded-lg border text-xs ${op.isDuplicate ? "bg-red-400/8 border-red-400/20" : "bg-green-400/8 border-green-400/20"}`}>
+                        <div key={`${op.agentName}-${op.paymentId ?? idx}`} className={`flex items-start gap-2 p-2 rounded-lg border text-xs ${op.isDuplicate ? "bg-red-400/8 border-red-400/20" : "bg-green-400/8 border-green-400/20"}`}>
                           <Icon className={`w-3.5 h-3.5 mt-0.5 flex-shrink-0 ${op.isDuplicate ? "text-red-400" : "text-green-400"}`} />
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5 mb-0.5">
