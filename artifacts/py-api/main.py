@@ -19,7 +19,7 @@ from routes import (
 from db import init_db
 
 app = FastAPI(
-    title="Duplicate Payment Detection API",
+    title="Sentinel API",
     description="AI-powered duplicate payment detection system",
     version="1.0.0",
 )

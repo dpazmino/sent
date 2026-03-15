@@ -38,7 +38,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         </div>
         <div>
           <h1 className="font-display font-bold text-lg text-foreground tracking-tight leading-tight">
-            Dup<span className="text-primary">Detect</span>
+            <span className="text-primary">Sentinel</span>
           </h1>
           <p className="text-[10px] text-muted-foreground uppercase tracking-widest font-semibold">Intelligence Platform</p>
         </div>
