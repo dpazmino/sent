@@ -21,15 +21,24 @@ const pyPaths = [
   "exports",
 ];
 
-for (const path of pyPaths) {
+for (const segment of pyPaths) {
   app.use(
-    `/api/${path}`,
+    `/api/${segment}`,
     createProxyMiddleware({
       target: PYTHON_API,
       changeOrigin: true,
       on: {
         proxyReq: (proxyReq, req) => {
-          proxyReq.path = `/py-api/${path}${req.url === "/" ? "" : req.url}`;
+          // req.url is relative to the mount path, e.g. "/" or "/?page=1&limit=15" or "/123"
+          // Avoid trailing slash before query string which triggers FastAPI 307 redirects
+          let relPath = req.url ?? "/";
+          if (relPath === "/") {
+            relPath = "";
+          } else if (relPath.startsWith("/?")) {
+            // Turn "/?foo=bar" → "?foo=bar" to avoid trailing slash
+            relPath = relPath.slice(1);
+          }
+          proxyReq.path = `/py-api/${segment}${relPath}`;
         },
       },
     })
