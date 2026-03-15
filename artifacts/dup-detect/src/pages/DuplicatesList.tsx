@@ -129,6 +129,7 @@ function ReviewModal({ item, onClose }: { item: DuplicateItem; onClose: () => vo
   const [opinions, setOpinions] = useState<DetectorOpinion[]>([]);
   const [convId, setConvId] = useState<string | undefined>(undefined);
   const [input, setInput] = useState("");
+  const [mobileTab, setMobileTab] = useState<"details" | "chat">("chat");
   const [loading, setLoading] = useState(false);
   const [initialising, setInitialising] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -207,7 +208,7 @@ function ReviewModal({ item, onClose }: { item: DuplicateItem; onClose: () => vo
         animate={{ scale: 1, y: 0, opacity: 1 }}
         exit={{ scale: 0.95, y: 16, opacity: 0 }}
         transition={{ type: "spring", damping: 28, stiffness: 300 }}
-        className="bg-card border border-border/60 rounded-2xl shadow-2xl w-full max-w-6xl h-[88vh] flex flex-col overflow-hidden"
+        className="bg-card border border-border/60 rounded-2xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col overflow-hidden"
         onClick={e => e.stopPropagation()}
       >
         {/* ── Modal Header ── */}
@@ -239,11 +240,27 @@ function ReviewModal({ item, onClose }: { item: DuplicateItem; onClose: () => vo
           </button>
         </div>
 
-        {/* ── Body: two-panel layout ── */}
-        <div className="flex flex-1 min-h-0 divide-x divide-border/50">
+        {/* ── Mobile tab switcher (hidden on lg+) ── */}
+        <div className="flex lg:hidden border-b border-border/50 shrink-0">
+          <button
+            onClick={() => setMobileTab("details")}
+            className={`flex-1 py-2.5 text-xs font-semibold transition-colors ${mobileTab === "details" ? "text-primary border-b-2 border-primary" : "text-muted-foreground"}`}
+          >
+            Payment Details
+          </button>
+          <button
+            onClick={() => setMobileTab("chat")}
+            className={`flex-1 py-2.5 text-xs font-semibold transition-colors ${mobileTab === "chat" ? "text-primary border-b-2 border-primary" : "text-muted-foreground"}`}
+          >
+            AI Review
+          </button>
+        </div>
+
+        {/* ── Body: responsive panels ── */}
+        <div className="flex flex-col lg:flex-row flex-1 min-h-0 lg:divide-x lg:divide-border/50 overflow-hidden">
 
           {/* ── LEFT: Payment data panel ── */}
-          <div className="w-[42%] flex flex-col min-h-0 flex-shrink-0">
+          <div className={`lg:w-[42%] flex flex-col min-h-0 flex-shrink-0 ${mobileTab === "chat" ? "hidden lg:flex" : "flex"}`}>
             <div className="px-4 py-2.5 bg-secondary/10 border-b border-border/30 flex-shrink-0">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Payment Details</p>
             </div>
@@ -317,7 +334,7 @@ function ReviewModal({ item, onClose }: { item: DuplicateItem; onClose: () => vo
           </div>
 
           {/* ── RIGHT: Training Agent chat ── */}
-          <div className="flex-1 flex flex-col min-h-0">
+          <div className={`flex-1 flex flex-col min-h-0 ${mobileTab === "details" ? "hidden lg:flex" : "flex"}`}>
             {/* Chat header */}
             <div className="flex items-center gap-3 px-4 py-2.5 bg-secondary/10 border-b border-border/30 flex-shrink-0">
               <div className="w-7 h-7 rounded-full bg-green-400/20 border border-green-400/30 flex items-center justify-center">
