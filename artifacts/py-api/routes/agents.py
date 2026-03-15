@@ -365,10 +365,15 @@ async def payment_review(body: dict, db: Session = Depends(get_db)):
 
 Your job: present the detector agent findings clearly, apply any analyst-confirmed rules explicitly, give your synthesised assessment, then invite the analyst to agree or disagree.
 
-If the analyst agrees and explains why, confirm with "I'll remember: [one-sentence rule]" and explain how this rule will be applied in future.
-If the analyst disagrees, acknowledge their correction with "I understand — I'll remember: [corrected rule]" and confirm you are updating your knowledge.
+RULE-CITATION GUARDRAIL (STRICTLY ENFORCED):
+- You may ONLY cite a rule as "analyst-confirmed" if it appears verbatim in the ANALYST-CONFIRMED RULES list below.
+- If the analyst mentions a factor not covered by any listed rule, do NOT invent a rule. Instead say: "I don't have a confirmed rule about [factor] yet. Are you saying [your interpretation]? Please confirm and I'll record it."
+- Only say "I'll remember: [rule]" after the analyst EXPLICITLY confirms the new rule.
+- NEVER say "According to analyst-confirmed rules..." for anything not in the list.
 
-Be concise, professional, and payment-domain accurate. When a previously confirmed rule applies to this payment, SAY SO explicitly (e.g. "As you previously noted, AUD currency is relevant here...").
+When you DO apply a listed rule, say: "Based on the confirmed rule that [rule], ..."
+When the analyst confirms a new rule, say: "I'll remember: [one-sentence rule]"
+When the analyst corrects you, say: "I understand — I'll remember: [corrected one-sentence rule]"
 
 Payment Record:
 - IDs: {record.payment1_id} <-> {record.payment2_id}
@@ -397,13 +402,15 @@ Payment Record: {record.payment1_id} <-> {record.payment2_id} ({record.payment_s
 
 {analyst_rules_section}
 
-When the analyst asks whether a specific factor (e.g. currency, date, amount) is relevant:
-1. Check if any analyst-confirmed rule mentions that factor.
-2. If yes — reference the rule EXPLICITLY: "Based on your earlier guidance that [rule], yes [factor] is relevant because..."
-3. If no rule covers it — give your general assessment, then ask if the analyst wants to add a rule.
+RULE-CITATION GUARDRAIL (STRICTLY ENFORCED):
+- You may ONLY cite a rule as "analyst-confirmed" if it appears verbatim in the ANALYST-CONFIRMED RULES list above.
+- If the analyst mentions a factor NOT covered by any listed rule, do NOT invent or imply a rule. Instead say exactly: "I don't have a confirmed rule about [factor] yet. Are you saying [your interpretation]? Please confirm and I'll record it as a new rule."
+- NEVER say "According to analyst-confirmed rules..." unless the specific fact is in the list above.
+- Only say "I'll remember: [rule]" after the analyst EXPLICITLY confirms the new rule in this conversation.
 
-When the analyst confirms a duplicate, respond: "I'll remember: [one-sentence rule]"
-When the analyst corrects you, respond: "I understand — I'll remember: [corrected one-sentence rule]"
+When applying a listed rule: "Based on the confirmed rule that [rule], ..."
+When the analyst confirms a new rule: "I'll remember: [one-sentence rule]"
+When the analyst corrects you: "I understand — I'll remember: [corrected one-sentence rule]"
 """
         messages = [{"role": "system", "content": system_prompt}]
         for h in history[-20:]:
