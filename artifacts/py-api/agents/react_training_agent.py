@@ -49,6 +49,8 @@ CRITICAL TOOL RULES (never break these):
 - If the analyst mentions a new factor not in the rules, ask: "I don't have a confirmed rule for [factor] yet. Are you saying [interpretation]? Confirm and I'll save it."
 - Call save_analyst_rule ONLY when the analyst explicitly confirms a new rule in the current message.
 - After save_analyst_rule succeeds, write "Saved: [rule]" and give Final Answer.
+- NEVER call update_payment_status unless the analyst explicitly says to change or update the status in their current message. Do NOT proactively update the status during analysis.
+- For update_payment_status, Action Input must be ONLY the status keyword: confirmed_duplicate, false_positive, under_review, or pending. Nothing else.
 
 TOOLS:
 {tools}
@@ -89,6 +91,7 @@ class UpdateStatusInput(BaseModel):
         description="New status: confirmed_duplicate | false_positive | under_review | pending"
     )
     notes: str = Field(
+        default="Status updated by analyst",
         description="Analyst note to record alongside the status change"
     )
 
@@ -182,8 +185,14 @@ def make_training_tools(db, record, preloaded_opinions: str, memory_saved_flag: 
         )
 
     # ── Tool 4: update status ───────────────────────────────────────────────
-    def update_payment_status(status: str, notes: str) -> str:
+    def update_payment_status(status: str, notes: str = "Status updated by analyst") -> str:
         valid = {"confirmed_duplicate", "false_positive", "under_review", "pending"}
+        # Gracefully handle "confirmed_duplicate, <reason>" — extract first token
+        if status not in valid:
+            first = status.split(",")[0].strip()
+            if first in valid:
+                notes = status[len(first):].lstrip(", ").strip() or notes
+                status = first
         if status not in valid:
             return f"Invalid status '{status}'. Must be one of: {', '.join(sorted(valid))}"
         record.status = status
@@ -224,8 +233,10 @@ def make_training_tools(db, record, preloaded_opinions: str, memory_saved_flag: 
             func=update_payment_status,
             name="update_payment_status",
             description=(
-                "Update the payment pair's status to confirmed_duplicate, false_positive, "
-                "under_review, or pending once a conclusion is reached with the analyst."
+                "Update the payment pair's status. "
+                "Action Input must be ONLY ONE of these exact keywords: "
+                "confirmed_duplicate | false_positive | under_review | pending. "
+                "Do NOT add any other text to the Action Input."
             ),
             args_schema=UpdateStatusInput,
         ),
