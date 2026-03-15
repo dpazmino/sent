@@ -9,6 +9,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 // Pages
 import Dashboard from "@/pages/Dashboard";
 import DuplicatesList from "@/pages/DuplicatesList";
+import PaymentDatabase from "@/pages/PaymentDatabase";
 import CorridorAnalysis from "@/pages/CorridorAnalysis";
 import MasterConsole from "@/pages/MasterConsole";
 import AgentTraining from "@/pages/AgentTraining";
@@ -31,6 +32,7 @@ function Router() {
       <Switch>
         <Route path="/" component={Dashboard} />
         <Route path="/duplicates" component={DuplicatesList} />
+        <Route path="/payments" component={PaymentDatabase} />
         <Route path="/corridor" component={CorridorAnalysis} />
         <Route path="/console" component={MasterConsole} />
         <Route path="/training" component={AgentTraining} />

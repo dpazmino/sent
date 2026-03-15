@@ -11,7 +11,8 @@ import {
   Menu,
   X,
   Activity,
-  ShieldAlert
+  ShieldAlert,
+  Landmark,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -19,6 +20,7 @@ import { cn } from "@/lib/utils";
 const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/duplicates", label: "Duplicates List", icon: Files },
+  { href: "/payments", label: "Payment Database", icon: Landmark },
   { href: "/corridor", label: "Corridor Analysis", icon: Globe2 },
   { href: "/console", label: "Master Console", icon: Terminal },
   { href: "/training", label: "Agent Training", icon: BrainCircuit },

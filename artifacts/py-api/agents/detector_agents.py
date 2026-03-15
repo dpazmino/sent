@@ -182,3 +182,103 @@ async def get_all_detector_opinions(payments: List[dict], memory_context: str = 
             consensus[pid] = round(avg_conf, 4)
     
     return {"opinions": all_opinions, "consensus": consensus}
+
+
+def _pick_agent(p1: dict, p2: dict, match_type: str) -> dict:
+    """Choose the most relevant detector agent for a candidate pair."""
+    sys1 = (p1.get("payment_system") or "").upper()
+    sys2 = (p2.get("payment_system") or "").upper()
+
+    if match_type in ("uetr_exact", "e2e_exact") or "SWIFT" in sys1 or "SWIFT" in sys2:
+        return next(a for a in DETECTOR_AGENTS if a["name"] == "SWIFT_Specialist")
+    if match_type == "trace_exact" or sys1 == "ACH" or sys2 == "ACH":
+        return next(a for a in DETECTOR_AGENTS if a["name"] == "ACH_Specialist")
+    if match_type == "cross_system" or sys1 != sys2:
+        return next(a for a in DETECTOR_AGENTS if a["name"] == "MultiSource_Detector")
+    if "fuzzy" in match_type:
+        return next(a for a in DETECTOR_AGENTS if a["name"] == "FuzzyMatch_Engine")
+    return next(a for a in DETECTOR_AGENTS if a["name"] == "PatternAnalysis_Agent")
+
+
+async def analyze_payment_pair(
+    p1: dict,
+    p2: dict,
+    match_type: str,
+    memory_context: str = "",
+) -> dict:
+    """
+    Analyse a single candidate payment pair with the most relevant detector agent.
+    Returns a dict with: isDuplicate, confidence, reasoning, duplicateType, matchedFields.
+    """
+    client = get_openai_client()
+    agent = _pick_agent(p1, p2, match_type)
+
+    system = agent["system_prompt"]
+    if memory_context:
+        system += f"\n\n## Custom Duplicate Definition (from training):\n{memory_context}"
+
+    def _fmt(p: dict) -> str:
+        keys = [
+            "id", "payment_system", "message_type", "source_system",
+            "amount", "currency", "value_date",
+            "originator_name", "originator_account", "originator_country",
+            "beneficiary_name", "beneficiary_account", "beneficiary_country",
+            "sender_bic", "receiver_bic",
+            "uetr", "transaction_reference", "end_to_end_id",
+            "trace_number", "routing_number", "sec_code",
+            "internal_ref", "remittance_info", "purpose_code",
+        ]
+        return json.dumps({k: p.get(k) for k in keys if p.get(k) is not None}, indent=2)
+
+    prompt = f"""Analyse this candidate duplicate payment pair.
+
+Candidate match type hint: {match_type}
+
+=== Payment A ===
+{_fmt(p1)}
+
+=== Payment B ===
+{_fmt(p2)}
+
+Respond with a single JSON object (no array):
+{{
+  "isDuplicate": true|false,
+  "confidence": 0.0-1.0,
+  "reasoning": "one or two sentence explanation",
+  "duplicateType": "exact_match|fuzzy_amount_date|uetr_duplicate|trace_duplicate|mt_mx_migration|multi_source_consolidation|network_retry|manual_resubmission|not_duplicate",
+  "matchedFields": ["field1", "field2", ...]
+}}"""
+
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=512,
+            temperature=0.1,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        content = response.choices[0].message.content or "{}"
+        for tag in ("```json", "```"):
+            if content.startswith(tag):
+                content = content[len(tag):]
+        if content.endswith("```"):
+            content = content[:-3]
+        result = json.loads(content.strip())
+        result.setdefault("isDuplicate", True)
+        result.setdefault("confidence", 0.5)
+        result.setdefault("reasoning", "")
+        result.setdefault("duplicateType", "unknown")
+        result.setdefault("matchedFields", [])
+        result["agentName"] = agent["name"]
+        return result
+    except Exception as e:
+        return {
+            "isDuplicate": True,
+            "confidence": 0.5,
+            "reasoning": f"Analysis error: {e}",
+            "duplicateType": "unknown",
+            "matchedFields": [],
+            "agentName": agent["name"],
+        }

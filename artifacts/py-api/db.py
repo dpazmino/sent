@@ -1,7 +1,7 @@
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import Column, String, Float, Integer, Boolean, DateTime, Text, JSON
+from sqlalchemy import Column, String, Float, Integer, Boolean, DateTime, Text, JSON, Date
 from datetime import datetime, timezone
 import uuid
 
@@ -113,6 +113,76 @@ class ScanRecord(Base):
     message = Column(Text)
 
 
+class PaymentRecord(Base):
+    """Simulated bank payment database — feeds into duplicate detection."""
+    __tablename__ = "dup_payments"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+
+    # --- Payment system / routing ---
+    payment_system = Column(String, nullable=False)  # SWIFT_MT, SWIFT_MX, ACH, INTERNAL
+    message_type = Column(String)   # MT103, MT202, MT202COV, pacs.008, pacs.009, pain.001, CCD, PPD, CTX, WIRE, BOOK
+    source_system = Column(String)  # CORE_BANKING, TREASURY, TRADE_FINANCE, CORRESPONDENT, RTGS, SWIFT_GPI
+    channel = Column(String)        # API, FILE, MANUAL, SWIFT_NET, FED_WIRE, CHIPS
+
+    # --- Core financial fields ---
+    amount = Column(Float, nullable=False)
+    currency = Column(String, nullable=False)       # ISO 4217
+    value_date = Column(String)                     # YYYY-MM-DD
+    status = Column(String, default="settled")      # received, processing, settled, failed, returned, cancelled
+    priority = Column(String, default="NORMAL")     # URGENT, NORMAL, LOW
+
+    # --- Timestamps ---
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    processed_at = Column(DateTime(timezone=True))
+
+    # --- Originator / Sender ---
+    originator_name = Column(String)
+    originator_account = Column(String)     # IBAN or account number
+    originator_country = Column(String)     # ISO 3166-1 alpha-2
+    sender_bic = Column(String)             # BIC8 or BIC11
+    sender_bank_name = Column(String)
+
+    # --- Beneficiary / Receiver ---
+    beneficiary_name = Column(String)
+    beneficiary_account = Column(String)    # IBAN or account number
+    beneficiary_country = Column(String)
+    receiver_bic = Column(String)
+    receiver_bank_name = Column(String)
+
+    # --- SWIFT-specific fields ---
+    uetr = Column(String)                   # UUID — Unique End-to-end Transaction Reference (SWIFT GPI)
+    transaction_reference = Column(String)  # MT field :20: / ISO InstrId
+    related_reference = Column(String)      # MT field :21:
+    end_to_end_id = Column(String)          # ISO 20022 EndToEndId
+    correspondent_bank = Column(String)     # Intermediary BIC
+
+    # --- ACH-specific fields ---
+    trace_number = Column(String)           # 15-digit ACH trace number
+    routing_number = Column(String)         # 9-digit ABA routing number
+    sec_code = Column(String)               # CCD, PPD, CTX, WEB, TEL
+    company_name = Column(String)           # ACH company name
+    individual_name = Column(String)        # ACH individual name / receiver name
+    batch_number = Column(String)           # ACH batch number
+    effective_date = Column(String)         # ACH effective entry date YYMMDD
+
+    # --- INTERNAL / book transfer fields ---
+    internal_ref = Column(String)
+    from_account = Column(String)
+    to_account = Column(String)
+    gl_code = Column(String)
+    department = Column(String)
+    cost_centre = Column(String)
+
+    # --- Narrative / purpose ---
+    remittance_info = Column(Text)
+    purpose_code = Column(String)           # ISO 20022 purpose code e.g. SUPP, SALA
+    invoice_reference = Column(String)
+
+    # --- Scan tracking ---
+    is_scanned = Column(Boolean, default=False)
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -124,6 +194,9 @@ def get_db():
 def init_db():
     Base.metadata.create_all(bind=engine)
     _seed_sample_data()
+    # Import here to avoid circular imports
+    from seed_payments import seed_payment_database
+    seed_payment_database()
 
 
 def _seed_sample_data():
