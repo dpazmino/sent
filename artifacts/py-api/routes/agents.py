@@ -2,12 +2,68 @@ import uuid
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from db import get_db, ConversationRecord, ConversationMessageRecord, DuplicatePaymentRecord, AgentMemoryRecord
-from agents.master_agent import run_master_agent
-from agents.text_to_sql_agent import generate_sql, generate_graph_spec
-from agents.detector_agents import get_all_detector_opinions
+from agents.master_agent import run_master_agent, MASTER_AGENT_SYSTEM_PROMPT
+from agents.text_to_sql_agent import generate_sql, generate_graph_spec, TEXT_TO_SQL_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT
+from agents.detector_agents import get_all_detector_opinions, DETECTOR_AGENTS
+from agents.training_agent import TRAINING_AGENT_SYSTEM_PROMPT
 from datetime import datetime, timezone
 
 router = APIRouter()
+
+ALL_AGENTS = [
+    {
+        "id": "master",
+        "name": "Master Detection Agent",
+        "category": "orchestrator",
+        "description": "Top-level agent that orchestrates all detection activity. Knows every payment standard — SWIFT MT/MX, ACH, ISO 20022 — and provides expert analysis and recommendations.",
+        "focus": "All payment systems",
+        "systemPrompt": MASTER_AGENT_SYSTEM_PROMPT,
+        "isTrainable": True,
+    },
+    {
+        "id": "text_to_sql",
+        "name": "Text-to-SQL Agent",
+        "category": "utility",
+        "description": "Converts natural language questions into precise SQL queries against the payment database. Learns schema definitions from training sessions.",
+        "focus": "Database querying",
+        "systemPrompt": TEXT_TO_SQL_SYSTEM_PROMPT,
+        "isTrainable": True,
+    },
+    {
+        "id": "graph_chart",
+        "name": "Graph & Chart Agent",
+        "category": "utility",
+        "description": "Generates chart specifications from natural language requests for data visualisation in the AI Graph Chat interface.",
+        "focus": "Data visualisation",
+        "systemPrompt": GRAPH_SYSTEM_PROMPT,
+        "isTrainable": False,
+    },
+    {
+        "id": "training",
+        "name": "Training Agent",
+        "category": "memory",
+        "description": "Manages persistent agent memory. Accepts schema definitions and custom duplicate rules from analysts and stores them for use by other agents.",
+        "focus": "Schema & rule learning",
+        "systemPrompt": TRAINING_AGENT_SYSTEM_PROMPT,
+        "isTrainable": True,
+    },
+] + [
+    {
+        "id": f"detector_{agent['name'].lower()}",
+        "name": agent["name"].replace("_", " "),
+        "category": "detector",
+        "description": agent["description"],
+        "focus": agent["focus"],
+        "systemPrompt": agent["system_prompt"],
+        "isTrainable": True,
+    }
+    for agent in DETECTOR_AGENTS
+]
+
+
+@router.get("/list")
+async def list_agents():
+    return {"agents": ALL_AGENTS}
 
 
 def get_memory_context(db: Session) -> str:
