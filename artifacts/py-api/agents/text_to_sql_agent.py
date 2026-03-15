@@ -39,9 +39,7 @@ Additionally, the user may define their own payment source tables in the data so
 """
 
 GRAPH_SYSTEM_PROMPT = """You are an AI that generates graph specifications for financial data visualization.
-Given a natural language query about duplicate payments, you return a JSON specification for a chart.
-
-The data comes from the dup_duplicate_payments table.
+You are given REAL query results from a PostgreSQL database. Use ONLY the provided data — do not invent or estimate numbers.
 
 You must return a valid JSON object with this structure:
 {
@@ -58,18 +56,19 @@ You must return a valid JSON object with this structure:
   ],
   "xAxisLabel": "optional x axis label",
   "yAxisLabel": "optional y axis label",
-  "sql": "the SQL query that would generate this data",
-  "explanation": "brief explanation of what this chart shows"
+  "explanation": "brief explanation of what this chart shows and what the data means"
 }
 
-For corridor analysis: use bar chart with corridors as labels (e.g., "US → GB")
-For country analysis: use bar chart
-For trends over time: use line chart
-For payment system breakdown: use pie chart
-For probability distribution: use bar chart with ranges
+Chart type guidance:
+- Corridors / categories / systems → bar chart
+- Trends over time → line chart
+- Share / breakdown of a whole → pie chart
+- Correlation between two numbers → scatter chart
 
-Always include realistic-looking data based on what you know about duplicate payment patterns.
-Generate at least 5-10 data points for meaningful visualization.
+Colour palette (use in order, cycling if needed):
+#3b82f6, #f59e0b, #ef4444, #10b981, #8b5cf6, #06b6d4, #f97316, #84cc16
+
+IMPORTANT: Build the chart entirely from the REAL DATA provided. Do not fabricate data points.
 """
 
 
@@ -105,19 +104,26 @@ async def generate_sql(natural_language_query: str, schema_context: str = "") ->
     return response.choices[0].message.content or ""
 
 
-async def generate_graph_spec(query: str, db_context: str = "", memory_context: str = "") -> dict:
+async def generate_graph_spec(query: str, sql_used: str = "", real_data: list = None, memory_context: str = "") -> dict:
     client = get_openai_client()
-    
+
     system = GRAPH_SYSTEM_PROMPT
     if memory_context:
         system += f"\n\n## Agent Memory Context\n{memory_context}"
-    
-    prompt = f"""Generate a chart specification for this query: "{query}"
 
-{f"Database context: {db_context}" if db_context else ""}
+    data_section = ""
+    if real_data:
+        data_section = f"\nReal query results ({len(real_data)} rows):\n{json.dumps(real_data[:200], indent=2)}"
+    else:
+        data_section = "\nNo data returned by the query."
 
-Return ONLY valid JSON with the structure specified."""
-    
+    prompt = f"""User request: "{query}"
+
+SQL executed: {sql_used or "N/A"}
+{data_section}
+
+Build a chart from the real data above. Return ONLY valid JSON with the structure specified."""
+
     response = await client.chat.completions.create(
         model="gpt-4o-mini",
         max_tokens=2048,
@@ -126,7 +132,7 @@ Return ONLY valid JSON with the structure specified."""
             {"role": "user", "content": prompt},
         ],
     )
-    
+
     content = response.choices[0].message.content or "{}"
     if content.startswith("```json"):
         content = content[7:]
@@ -135,7 +141,7 @@ Return ONLY valid JSON with the structure specified."""
     if content.endswith("```"):
         content = content[:-3]
     content = content.strip()
-    
+
     try:
         return json.loads(content)
     except json.JSONDecodeError:
@@ -145,5 +151,4 @@ Return ONLY valid JSON with the structure specified."""
             "labels": ["No Data"],
             "datasets": [{"label": "Count", "data": [0], "backgroundColor": ["#3b82f6"], "borderColor": ["#2563eb"]}],
             "explanation": "Could not parse AI response",
-            "sql": "",
         }

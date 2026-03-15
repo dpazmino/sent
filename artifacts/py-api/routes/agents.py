@@ -144,11 +144,47 @@ async def chat_with_agent(body: dict, db: Session = Depends(get_db)):
     }
 
 
+def _safe_execute_sql(db: Session, sql: str) -> list:
+    """Execute a read-only SQL query and return rows as list of dicts. Rejects non-SELECT statements."""
+    sql_clean = sql.strip().rstrip(";")
+    first_word = sql_clean.split()[0].upper() if sql_clean else ""
+    if first_word != "SELECT":
+        return []
+    # Only allow queries against dup_ tables for safety
+    lower = sql_clean.lower()
+    forbidden = ["drop", "delete", "insert", "update", "truncate", "alter", "create"]
+    if any(w in lower for w in forbidden):
+        return []
+    try:
+        from sqlalchemy import text as sa_text
+        result = db.execute(sa_text(sql_clean))
+        keys = list(result.keys())
+        rows = []
+        for row in result.fetchall():
+            row_dict = {}
+            for i, key in enumerate(keys):
+                val = row[i]
+                # Serialise non-JSON-native types
+                if hasattr(val, "isoformat"):
+                    val = val.isoformat()
+                elif val is not None:
+                    try:
+                        val = float(val) if isinstance(val, (int, float)) else str(val)
+                    except Exception:
+                        val = str(val)
+                row_dict[key] = val
+            rows.append(row_dict)
+        return rows
+    except Exception as e:
+        print(f"SQL execution error: {e}")
+        return []
+
+
 @router.post("/graph-query")
 async def graph_query(body: dict, db: Session = Depends(get_db)):
     query = body.get("query", "")
     conversation_id = body.get("conversationId")
-    
+
     if not conversation_id:
         conv = ConversationRecord(
             id=str(uuid.uuid4()),
@@ -158,39 +194,46 @@ async def graph_query(body: dict, db: Session = Depends(get_db)):
         db.add(conv)
         db.commit()
         conversation_id = conv.id
-    
+
     memory_context = get_memory_context(db)
-    
-    stats = db.query(DuplicatePaymentRecord).count()
-    db_context = f"Database has {stats} duplicate payment records."
-    
-    spec = await generate_graph_spec(query, db_context, memory_context)
-    
-    explanation = spec.pop("explanation", "Chart generated based on your query.")
-    sql_used = spec.pop("sql", "")
-    
-    user_msg = ConversationMessageRecord(
-        id=str(uuid.uuid4()),
-        conversation_id=conversation_id,
-        role="user",
-        content=query,
-        timestamp=datetime.now(timezone.utc),
+
+    # Step 1: load schema memory so Text-to-SQL knows user-defined tables
+    schema_memories = db.query(AgentMemoryRecord).filter(
+        AgentMemoryRecord.category == "database_schema"
+    ).all()
+    schema_ctx = "\n".join(f"{m.key}: {m.content}" for m in schema_memories)
+
+    # Step 2: generate SQL from natural language
+    sql_generated = await generate_sql(query, schema_ctx)
+
+    # Step 3: execute against the real database
+    real_data = _safe_execute_sql(db, sql_generated)
+
+    # Step 4: build chart spec from real results
+    spec = await generate_graph_spec(
+        query=query,
+        sql_used=sql_generated,
+        real_data=real_data,
+        memory_context=memory_context,
     )
-    asst_msg = ConversationMessageRecord(
-        id=str(uuid.uuid4()),
-        conversation_id=conversation_id,
-        role="assistant",
-        content=explanation,
-        timestamp=datetime.now(timezone.utc),
-    )
-    db.add(user_msg)
-    db.add(asst_msg)
+
+    explanation = spec.pop("explanation", "Chart generated from live database query.")
+
+    db.add(ConversationMessageRecord(
+        id=str(uuid.uuid4()), conversation_id=conversation_id,
+        role="user", content=query, timestamp=datetime.now(timezone.utc),
+    ))
+    db.add(ConversationMessageRecord(
+        id=str(uuid.uuid4()), conversation_id=conversation_id,
+        role="assistant", content=explanation, timestamp=datetime.now(timezone.utc),
+    ))
     db.commit()
-    
+
     return {
         "graphSpec": spec,
         "explanation": explanation,
-        "sqlUsed": sql_used,
+        "sqlUsed": sql_generated,
+        "rowCount": len(real_data),
         "conversationId": conversation_id,
     }
 
