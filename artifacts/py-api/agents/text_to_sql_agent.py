@@ -4,7 +4,7 @@ Reads the data source schema definition and converts natural language queries to
 """
 import os
 import json
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 TEXT_TO_SQL_SYSTEM_PROMPT = """You are a Text-to-SQL agent for a banking duplicate payment detection system.
 You convert natural language questions into SQL queries based on the provided database schema.
@@ -78,11 +78,11 @@ def get_openai_client():
     api_key = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")
     
     if base_url and api_key:
-        return OpenAI(base_url=base_url, api_key=api_key)
+        return AsyncAsyncOpenAI(base_url=base_url, api_key=api_key)
     
     api_key_direct = os.environ.get("OPENAI_API_KEY")
     if api_key_direct:
-        return OpenAI(api_key=api_key_direct)
+        return AsyncAsyncOpenAI(api_key=api_key_direct)
     
     raise RuntimeError("No OpenAI API key configured.")
 
@@ -94,9 +94,9 @@ async def generate_sql(natural_language_query: str, schema_context: str = "") ->
     if schema_context:
         system += f"\n\n## Additional Schema Context (User-Defined)\n{schema_context}"
     
-    response = client.chat.completions.create(
-        model="gpt-5.2",
-        max_completion_tokens=1024,
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        max_tokens=1024,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": natural_language_query},
@@ -118,9 +118,9 @@ async def generate_graph_spec(query: str, db_context: str = "", memory_context: 
 
 Return ONLY valid JSON with the structure specified."""
     
-    response = client.chat.completions.create(
-        model="gpt-5.2",
-        max_completion_tokens=2048,
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        max_tokens=2048,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},

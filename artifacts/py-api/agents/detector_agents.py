@@ -5,7 +5,7 @@ Each can be asked for an opinion on a set of payments.
 """
 import os
 import json
-from openai import OpenAI
+from openai import AsyncOpenAI
 from typing import List, Dict
 
 DETECTOR_AGENTS = [
@@ -92,11 +92,11 @@ def get_openai_client():
     api_key = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")
     
     if base_url and api_key:
-        return OpenAI(base_url=base_url, api_key=api_key)
+        return AsyncOpenAI(base_url=base_url, api_key=api_key)
     
     api_key_direct = os.environ.get("OPENAI_API_KEY")
     if api_key_direct:
-        return OpenAI(api_key=api_key_direct)
+        return AsyncOpenAI(api_key=api_key_direct)
     
     raise RuntimeError("No OpenAI API key configured.")
 
@@ -127,9 +127,9 @@ For each pair, return a JSON object:
 Return a JSON array of these objects."""
     
     try:
-        response = client.chat.completions.create(
-            model="gpt-5.2",
-            max_completion_tokens=3000,
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=3000,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},

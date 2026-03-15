@@ -1,4 +1,4 @@
-import express, { type Express } from "express";
+import express, { type Express, type Request } from "express";
 import cors from "cors";
 import router from "./routes";
 import { createProxyMiddleware } from "http-proxy-middleware";
@@ -29,16 +29,26 @@ for (const segment of pyPaths) {
       changeOrigin: true,
       on: {
         proxyReq: (proxyReq, req) => {
-          // req.url is relative to the mount path, e.g. "/" or "/?page=1&limit=15" or "/123"
-          // Avoid trailing slash before query string which triggers FastAPI 307 redirects
-          let relPath = req.url ?? "/";
+          // Fix the path: strip the leading slash that comes from req.url
+          // req.url is relative to the mount point, e.g. "/" or "/chat" or "?page=1"
+          let relPath = (req as Request).url ?? "/";
           if (relPath === "/") {
             relPath = "";
           } else if (relPath.startsWith("/?")) {
-            // Turn "/?foo=bar" → "?foo=bar" to avoid trailing slash
+            // "/?foo=bar" → "?foo=bar" to avoid trailing slash redirect
             relPath = relPath.slice(1);
           }
           proxyReq.path = `/py-api/${segment}${relPath}`;
+
+          // Re-write body: Express.json() has already consumed the stream,
+          // so we need to write the parsed body back to the proxy request.
+          const body = (req as any).body;
+          if (body && Object.keys(body).length > 0) {
+            const bodyData = JSON.stringify(body);
+            proxyReq.setHeader("Content-Type", "application/json");
+            proxyReq.setHeader("Content-Length", Buffer.byteLength(bodyData));
+            proxyReq.write(bodyData);
+          }
         },
       },
     })

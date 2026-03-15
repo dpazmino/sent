@@ -3,7 +3,7 @@ Master Duplicate Payment Detection Agent.
 Knows everything about duplicate payments across SWIFT MT, SWIFT MX, ACH, and ISO 20022.
 """
 import os
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 MASTER_AGENT_SYSTEM_PROMPT = """You are the Master Duplicate Payment Detection Agent for a banking institution.
 
@@ -45,18 +45,15 @@ You analyze payments, explain why they are likely duplicates, and provide action
 When analyzing data, always cite which payment fields matched and why.
 """
 
-def get_openai_client():
+def get_openai_client() -> AsyncOpenAI:
     base_url = os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
     api_key = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")
-    
     if base_url and api_key:
-        return OpenAI(base_url=base_url, api_key=api_key)
-    
+        return AsyncOpenAI(base_url=base_url, api_key=api_key)
     api_key_direct = os.environ.get("OPENAI_API_KEY")
     if api_key_direct:
-        return OpenAI(api_key=api_key_direct)
-    
-    raise RuntimeError("No OpenAI API key configured. Set AI_INTEGRATIONS_OPENAI_API_KEY or OPENAI_API_KEY.")
+        return AsyncOpenAI(api_key=api_key_direct)
+    raise RuntimeError("No OpenAI API key configured.")
 
 
 def build_master_messages(conversation_history: list, user_message: str, memory_context: str = "") -> list:
@@ -75,9 +72,9 @@ async def run_master_agent(user_message: str, conversation_history: list, memory
     client = get_openai_client()
     messages = build_master_messages(conversation_history, user_message, memory_context)
     
-    response = client.chat.completions.create(
-        model="gpt-5.2",
-        max_completion_tokens=4096,
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        max_tokens=1024,
         messages=messages,
     )
     return response.choices[0].message.content or ""
