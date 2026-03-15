@@ -78,11 +78,11 @@ def get_openai_client():
     api_key = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")
     
     if base_url and api_key:
-        return AsyncAsyncOpenAI(base_url=base_url, api_key=api_key)
+        return AsyncOpenAI(base_url=base_url, api_key=api_key)
     
     api_key_direct = os.environ.get("OPENAI_API_KEY")
     if api_key_direct:
-        return AsyncAsyncOpenAI(api_key=api_key_direct)
+        return AsyncOpenAI(api_key=api_key_direct)
     
     raise RuntimeError("No OpenAI API key configured.")
 
