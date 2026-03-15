@@ -195,6 +195,185 @@ async def graph_query(body: dict, db: Session = Depends(get_db)):
     }
 
 
+@router.post("/payment-review")
+async def payment_review(body: dict, db: Session = Depends(get_db)):
+    """
+    Interactive review session for a specific duplicate payment pair.
+    - First call (no message): loads the record, asks all 5 detector agents, synthesises analysis
+    - Subsequent calls: continues dialogue, saves analyst feedback as memory
+    """
+    duplicate_id = body.get("duplicateId", "")
+    message = body.get("message", "")  # empty on first call
+    conversation_id = body.get("conversationId")
+
+    record = db.query(DuplicatePaymentRecord).filter(DuplicatePaymentRecord.id == duplicate_id).first()
+    if not record:
+        return {"error": f"Record {duplicate_id} not found"}
+
+    payment_data = {
+        "id": record.id,
+        "payment1Id": record.payment1_id,
+        "payment2Id": record.payment2_id,
+        "probability": record.probability,
+        "duplicateType": record.duplicate_type,
+        "paymentSystem": record.payment_system,
+        "amount": record.amount,
+        "currency": record.currency,
+        "senderBIC": record.sender_bic,
+        "receiverBIC": record.receiver_bic,
+        "originatorCountry": record.originator_country,
+        "beneficiaryCountry": record.beneficiary_country,
+        "paymentDate1": record.payment_date1,
+        "paymentDate2": record.payment_date2,
+        "matchedFields": record.matched_fields or [],
+        "status": record.status,
+        "notes": record.notes,
+    }
+
+    # Load or create conversation
+    if not conversation_id:
+        conv = ConversationRecord(
+            id=str(uuid.uuid4()),
+            agent_type="payment_review",
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(conv)
+        db.commit()
+        conversation_id = conv.id
+
+    history = get_conversation_history(conversation_id, db)
+
+    # Load memory context
+    dup_def_memories = db.query(AgentMemoryRecord).filter(
+        AgentMemoryRecord.category == "duplicate_definition"
+    ).all()
+    memory_context = "\n".join(f"{m.key}: {m.content}" for m in dup_def_memories)
+
+    # --- FIRST CALL: consult all 5 detector agents and synthesise ---
+    detector_opinions = None
+    if not message:
+        opinions_result = await get_all_detector_opinions([payment_data], memory_context)
+        detector_opinions = opinions_result.get("opinions", [])
+
+        # Build a rich synthesis prompt
+        opinions_summary = ""
+        for op in detector_opinions:
+            agent_name = op.get("agentName", "Unknown")
+            confidence = round(op.get("confidence", 0) * 100, 1)
+            is_dup = op.get("isDuplicate", True)
+            reasoning = op.get("reasoning", "")
+            verdict = "IS duplicate" if is_dup else "NOT duplicate"
+            opinions_summary += f"\n**{agent_name}** ({confidence}% confidence) — {verdict}\n{reasoning}\n"
+
+        matched_fields_str = ", ".join(record.matched_fields or [])
+        memory_section = ("Memory / Previously Learned Rules:\n" + memory_context) if memory_context else ""
+
+        system_prompt = f"""You are a Payment Review Training Agent helping an analyst decide if a flagged payment pair is genuinely a duplicate.
+
+You have received opinions from 5 specialist detector agents about this payment pair. Present their findings clearly, give your own synthesised assessment, then invite the analyst to agree or disagree.
+
+If the analyst agrees and explains why, thank them and save that reasoning.
+If the analyst disagrees and explains why, acknowledge their correction with "I understand — I'll remember that" and confirm you are saving their rule.
+
+Always be concise, professional, and payment-domain accurate.
+
+Payment Record:
+- IDs: {record.payment1_id} <-> {record.payment2_id}
+- System: {record.payment_system} | Type: {record.duplicate_type}
+- Amount: {record.amount} {record.currency}
+- Sender BIC: {record.sender_bic} | Receiver BIC: {record.receiver_bic}
+- Payment Dates: {record.payment_date1} / {record.payment_date2}
+- Matched Fields: {matched_fields_str}
+- Current Status: {record.status}
+- Probability Score: {round(record.probability * 100, 1)}%
+
+Detector Agent Opinions:
+{opinions_summary}
+
+{memory_section}
+"""
+        initial_user_msg = "Please analyse this duplicate payment pair and summarise what each detector agent found."
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": initial_user_msg},
+        ]
+    else:
+        # --- SUBSEQUENT CALLS: continue conversation ---
+        memory_section = ("Memory / Previously Learned Rules:\n" + memory_context) if memory_context else ""
+        system_prompt = f"""You are a Payment Review Training Agent helping an analyst decide if a flagged payment pair is genuinely a duplicate.
+
+Payment Record being reviewed: {record.payment1_id} <-> {record.payment2_id} ({record.payment_system}, {record.amount} {record.currency}, {record.duplicate_type})
+
+When the analyst agrees with a duplicate finding, acknowledge and confirm you are saving their reasoning as a rule.
+When the analyst disagrees, acknowledge their correction and confirm you are saving that exception as a rule.
+Always confirm what you learned in structured form: "I'll remember: [rule summary]"
+
+{memory_section}
+"""
+        messages = [{"role": "system", "content": system_prompt}]
+        for h in history[-20:]:
+            messages.append({"role": h["role"], "content": h["content"]})
+        messages.append({"role": "user", "content": message})
+
+    # Call OpenAI
+    import os
+    from openai import AsyncOpenAI
+    base_url = os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
+    api_key = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    client = AsyncOpenAI(base_url=base_url, api_key=api_key) if base_url else AsyncOpenAI(api_key=api_key)
+
+    completion = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        max_tokens=1200,
+        messages=messages,
+    )
+    response_text = completion.choices[0].message.content or ""
+
+    # Save messages to conversation history
+    user_content = message if message else "Please analyse this duplicate payment pair and summarise what each detector agent found."
+    db.add(ConversationMessageRecord(
+        id=str(uuid.uuid4()), conversation_id=conversation_id,
+        role="user", content=user_content, timestamp=datetime.now(timezone.utc),
+    ))
+    db.add(ConversationMessageRecord(
+        id=str(uuid.uuid4()), conversation_id=conversation_id,
+        role="assistant", content=response_text, timestamp=datetime.now(timezone.utc),
+    ))
+
+    # Detect analyst feedback and save to memory
+    memory_saved = False
+    memory_key = None
+    if message:
+        lower_msg = message.lower()
+        is_feedback = any(w in lower_msg for w in [
+            "agree", "disagree", "correct", "incorrect", "wrong", "right",
+            "not a duplicate", "is a duplicate", "because", "reason", "explain",
+            "this is", "this isn't", "should not", "should be", "remember",
+        ])
+        if is_feedback:
+            words = message.split()[:6]
+            memory_key = f"review_{record.payment_system}_{record.duplicate_type}_{'_'.join(w.lower() for w in words if len(w) > 2)[:40]}"
+            db.add(AgentMemoryRecord(
+                id=str(uuid.uuid4()),
+                category="duplicate_definition",
+                key=memory_key,
+                content=f"Analyst reviewed {record.payment1_id}↔{record.payment2_id} ({record.payment_system}/{record.duplicate_type}). Analyst said: '{message}'. Agent response: '{response_text[:400]}'",
+                updated_at=datetime.now(timezone.utc),
+            ))
+            memory_saved = True
+
+    db.commit()
+
+    return {
+        "response": response_text,
+        "conversationId": conversation_id,
+        "memorySaved": memory_saved,
+        "memoryKey": memory_key,
+        "detectorOpinions": detector_opinions,
+        "paymentRecord": payment_data,
+    }
+
+
 @router.post("/detector-opinions")
 async def get_detector_opinions(body: dict, db: Session = Depends(get_db)):
     payment_ids = body.get("paymentIds", [])
