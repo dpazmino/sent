@@ -6,6 +6,7 @@ from agents.master_agent import run_master_agent, MASTER_AGENT_SYSTEM_PROMPT
 from agents.text_to_sql_agent import generate_sql, generate_graph_spec, TEXT_TO_SQL_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT
 from agents.detector_agents import get_all_detector_opinions, DETECTOR_AGENTS
 from agents.training_agent import TRAINING_AGENT_SYSTEM_PROMPT
+from agents.react_training_agent import run_react_training_agent
 from datetime import datetime, timezone
 
 router = APIRouter()
@@ -290,8 +291,9 @@ async def graph_query(body: dict, db: Session = Depends(get_db)):
 async def payment_review(body: dict, db: Session = Depends(get_db)):
     """
     Interactive review session for a specific duplicate payment pair.
-    - First call (no message): loads the record, asks all 5 detector agents, synthesises analysis
-    - Subsequent calls: continues dialogue, saves analyst feedback as memory
+    Powered by a LangChain ReAct agent with two memory layers:
+      - SHORT-TERM: ConversationSummaryBufferMemory (summarises old turns, keeps recent ones verbatim)
+      - LONG-TERM:  PostgreSQL rule store (written only via save_analyst_rule tool)
     """
     duplicate_id = body.get("duplicateId", "")
     message = body.get("message", "")  # empty on first call
@@ -334,105 +336,46 @@ async def payment_review(body: dict, db: Session = Depends(get_db)):
 
     history = get_conversation_history(conversation_id, db)
 
-    # Load memory — format as clear, prioritised analyst rules
-    dup_def_memories = db.query(AgentMemoryRecord).filter(
-        AgentMemoryRecord.category == "duplicate_definition"
-    ).order_by(AgentMemoryRecord.updated_at.desc()).limit(20).all()
-    analyst_rules = _format_analyst_rules(dup_def_memories)
-    analyst_rules_section = (
-        "ANALYST-CONFIRMED RULES (THESE OVERRIDE YOUR GENERAL KNOWLEDGE — apply them explicitly):\n"
-        + analyst_rules
-    ) if analyst_rules else ""
-
-    # --- FIRST CALL: consult all 5 detector agents and synthesise ---
+    # Pre-compute detector opinions on first call so the tool closure can serve them
     detector_opinions = None
+    preloaded_opinions = ""
     if not message:
+        dup_def_memories = db.query(AgentMemoryRecord).filter(
+            AgentMemoryRecord.category == "duplicate_definition"
+        ).order_by(AgentMemoryRecord.updated_at.desc()).limit(20).all()
+        analyst_rules = _format_analyst_rules(dup_def_memories)
+
         opinions_result = await get_all_detector_opinions([payment_data], analyst_rules)
         detector_opinions = opinions_result.get("opinions", [])
 
-        opinions_summary = ""
+        lines = []
         for op in detector_opinions:
             agent_name = op.get("agentName", "Unknown")
             confidence = round(op.get("confidence", 0) * 100, 1)
-            is_dup = op.get("isDuplicate", True)
+            verdict = "IS duplicate" if op.get("isDuplicate", True) else "NOT duplicate"
             reasoning = op.get("reasoning", "")
-            verdict = "IS duplicate" if is_dup else "NOT duplicate"
-            opinions_summary += f"\n**{agent_name}** ({confidence}% confidence) — {verdict}\n{reasoning}\n"
+            lines.append(f"**{agent_name}** ({confidence}% confidence) — {verdict}\n{reasoning}")
+        preloaded_opinions = "\n\n".join(lines)
 
-        matched_fields_str = ", ".join(record.matched_fields or [])
-
-        system_prompt = f"""You are a Payment Review Training Agent helping an analyst decide if a flagged payment pair is genuinely a duplicate.
-
-Your job: present the detector agent findings clearly, apply any analyst-confirmed rules explicitly, give your synthesised assessment, then invite the analyst to agree or disagree.
-
-RULE-CITATION GUARDRAIL (STRICTLY ENFORCED):
-- You may ONLY cite a rule as "analyst-confirmed" if it appears verbatim in the ANALYST-CONFIRMED RULES list below.
-- If the analyst mentions a factor not covered by any listed rule, do NOT invent a rule. Instead say: "I don't have a confirmed rule about [factor] yet. Are you saying [your interpretation]? Please confirm and I'll record it."
-- Only say "I'll remember: [rule]" after the analyst EXPLICITLY confirms the new rule.
-- NEVER say "According to analyst-confirmed rules..." for anything not in the list.
-
-When you DO apply a listed rule, say: "Based on the confirmed rule that [rule], ..."
-When the analyst confirms a new rule, say: "I'll remember: [one-sentence rule]"
-When the analyst corrects you, say: "I understand — I'll remember: [corrected one-sentence rule]"
-
-Payment Record:
-- IDs: {record.payment1_id} <-> {record.payment2_id}
-- System: {record.payment_system} | Type: {record.duplicate_type}
-- Amount: {record.amount} {record.currency}
-- Sender BIC: {record.sender_bic} | Receiver BIC: {record.receiver_bic}
-- Payment Dates: {record.payment_date1} / {record.payment_date2}
-- Matched Fields: {matched_fields_str}
-- Probability Score: {round(record.probability * 100, 1)}%
-
-Detector Agent Opinions:
-{opinions_summary}
-
-{analyst_rules_section}
-"""
-        initial_user_msg = "Please analyse this duplicate payment pair and summarise what each detector agent found."
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": initial_user_msg},
-        ]
-    else:
-        # --- SUBSEQUENT CALLS: continue conversation ---
-        system_prompt = f"""You are a Payment Review Training Agent in an ongoing review session.
-
-Payment Record: {record.payment1_id} <-> {record.payment2_id} ({record.payment_system}, {record.amount} {record.currency}, {record.duplicate_type})
-
-{analyst_rules_section}
-
-RULE-CITATION GUARDRAIL (STRICTLY ENFORCED):
-- You may ONLY cite a rule as "analyst-confirmed" if it appears verbatim in the ANALYST-CONFIRMED RULES list above.
-- If the analyst mentions a factor NOT covered by any listed rule, do NOT invent or imply a rule. Instead say exactly: "I don't have a confirmed rule about [factor] yet. Are you saying [your interpretation]? Please confirm and I'll record it as a new rule."
-- NEVER say "According to analyst-confirmed rules..." unless the specific fact is in the list above.
-- Only say "I'll remember: [rule]" after the analyst EXPLICITLY confirms the new rule in this conversation.
-
-When applying a listed rule: "Based on the confirmed rule that [rule], ..."
-When the analyst confirms a new rule: "I'll remember: [one-sentence rule]"
-When the analyst corrects you: "I understand — I'll remember: [corrected one-sentence rule]"
-"""
-        messages = [{"role": "system", "content": system_prompt}]
-        for h in history[-20:]:
-            messages.append({"role": h["role"], "content": h["content"]})
-        messages.append({"role": "user", "content": message})
-
-    # Call OpenAI
-    import os
-    from openai import AsyncOpenAI
-    base_url = os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
-    api_key = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    client = AsyncOpenAI(base_url=base_url, api_key=api_key) if base_url else AsyncOpenAI(api_key=api_key)
-
-    completion = await client.chat.completions.create(
-        model="gpt-4o-mini",
-        max_tokens=1200,
-        messages=messages,
+    # Run LangChain ReAct agent
+    agent_result = await run_react_training_agent(
+        payment_data=payment_data,
+        record=record,
+        message=message or None,
+        conversation_id=conversation_id,
+        history=history,
+        db=db,
+        preloaded_opinions=preloaded_opinions,
     )
-    response_text = completion.choices[0].message.content or ""
 
-    # Save messages to conversation history
-    user_content = message if message else "Please analyse this duplicate payment pair and summarise what each detector agent found."
+    response_text = agent_result["response"]
+    memory_saved = agent_result["memorySaved"]
+    memory_key = agent_result["memoryKey"]
+
+    # Persist raw turn to conversation DB so history is available next call
+    user_content = message if message else (
+        "Please consult the detector agents and give me a full analysis of this payment pair."
+    )
     db.add(ConversationMessageRecord(
         id=str(uuid.uuid4()), conversation_id=conversation_id,
         role="user", content=user_content, timestamp=datetime.now(timezone.utc),
@@ -441,52 +384,6 @@ When the analyst corrects you: "I understand — I'll remember: [corrected one-s
         id=str(uuid.uuid4()), conversation_id=conversation_id,
         role="assistant", content=response_text, timestamp=datetime.now(timezone.utc),
     ))
-
-    # Detect analyst feedback and save to memory
-    memory_saved = False
-    memory_key = None
-    if message:
-        lower_msg = message.lower()
-        is_feedback = any(w in lower_msg for w in [
-            "agree", "disagree", "correct", "incorrect", "wrong", "right",
-            "not a duplicate", "is a duplicate", "because", "reason", "explain",
-            "this is", "this isn't", "should not", "should be", "remember",
-            "aud", "usd", "eur", "gbp", "currency", "amount",
-        ])
-        if is_feedback:
-            words = message.split()[:6]
-            memory_key = f"review_{record.payment_system}_{record.duplicate_type}_{'_'.join(w.lower() for w in words if len(w) > 2)[:40]}"
-
-            # Extract the clean distilled rule the agent stated ("I'll remember: ...")
-            remember_match = _re.search(
-                r"I[''\u2019]ll remember:?\s*(.+?)(?:\n|$)",
-                response_text,
-                _re.IGNORECASE,
-            )
-            distilled_rule = remember_match.group(1).strip() if remember_match else response_text[:200]
-
-            # Save as clean "Rule: ..." format so _extract_distilled_rule() picks it up perfectly
-            clean_content = (
-                f"Rule: {distilled_rule}\n"
-                f"Context: {record.payment_system}/{record.duplicate_type}, "
-                f"analyst said: '{message[:200]}'"
-            )
-
-            # Check if a record with this key already exists; if so, update it
-            existing = db.query(AgentMemoryRecord).filter(AgentMemoryRecord.key == memory_key).first()
-            if existing:
-                existing.content = clean_content
-                existing.updated_at = datetime.now(timezone.utc)
-            else:
-                db.add(AgentMemoryRecord(
-                    id=str(uuid.uuid4()),
-                    category="duplicate_definition",
-                    key=memory_key,
-                    content=clean_content,
-                    updated_at=datetime.now(timezone.utc),
-                ))
-            memory_saved = True
-
     db.commit()
 
     return {
