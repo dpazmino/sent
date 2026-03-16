@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, Request, Response } from "express";
 import { query, queryOne, execute } from "../db.js";
 import { v4 as uuidv4 } from "uuid";
 import { runTrainingAgent } from "../agents/trainingAgent.js";
@@ -59,13 +59,14 @@ router.get("/sessions/:sessionId/messages", async (req, res) => {
   }
 });
 
-router.post("/sessions/:sessionId/chat", async (req, res) => {
+// Shared chat handler — handles both /sessions/:id/messages (schema) and /sessions/:id/chat (legacy)
+async function handleTrainingChat(req: Request, res: Response): Promise<void> {
   try {
     const { message } = req.body as { message: string };
-    const sessionId = req.params["sessionId"];
+    const sessionId = req.params["sessionId"] || req.params["id"];
 
     const session = await queryOne("SELECT * FROM dup_training_sessions WHERE id = $1", [sessionId]);
-    if (!session) return res.status(404).json({ error: "Session not found" });
+    if (!session) { res.status(404).json({ error: "Session not found" }); return; }
 
     const msgId = uuidv4();
     await execute(
@@ -102,33 +103,50 @@ router.post("/sessions/:sessionId/chat", async (req, res) => {
          VALUES ($1, $2, $3, $4, NOW(), NOW())
          ON CONFLICT (key) DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()`,
         [uuidv4(), String(session["training_type"]), memoryKey, memoryContent]
-      ).catch(() => {
-        return execute(
+      ).catch(() =>
+        execute(
           `INSERT INTO dup_agent_memory (id, category, key, content, created_at, updated_at) VALUES ($1, $2, $3, $4, NOW(), NOW())`,
           [uuidv4(), String(session["training_type"]), memoryKey, memoryContent]
-        );
-      });
+        )
+      );
     }
 
-    return res.json({
-      userMessageId: msgId,
-      response,
-      assistantMessageId: replyId,
-      memorySaved,
-      memoryKey,
-    });
+    res.json({ response, memorySaved, memoryKey: memoryKey ?? null });
   } catch (e) {
     console.error("Training chat error:", e);
-    return res.status(500).json({ error: "Chat failed" });
+    res.status(500).json({ error: "Chat failed" });
   }
-});
+}
+
+// POST /sessions/:id/messages  — matches generated client schema
+router.post("/sessions/:sessionId/messages", handleTrainingChat);
+// POST /sessions/:id/chat      — legacy alias kept for backward compat
+router.post("/sessions/:sessionId/chat", handleTrainingChat);
 
 router.get("/memory", async (_req, res) => {
   try {
     const rows = await query("SELECT * FROM dup_agent_memory ORDER BY updated_at DESC");
-    res.json({ memories: rows.map((r) => ({ id: r["id"], category: r["category"], key: r["key"], content: r["content"], updatedAt: r["updated_at"] })) });
+    res.json({ memories: rows.map((r) => ({
+      id: r["id"],
+      category: r["category"],
+      key: r["key"],
+      content: r["content"],
+      createdAt: r["created_at"],
+      updatedAt: r["updated_at"],
+    })) });
   } catch (e) {
     res.status(500).json({ error: "Failed to get memory" });
+  }
+});
+
+// DELETE /memory — clear all agent memory entries
+router.delete("/memory", async (_req, res) => {
+  try {
+    await execute("DELETE FROM dup_agent_memory");
+    res.json({ success: true, message: "All agent memory cleared" });
+  } catch (e) {
+    console.error("Clear memory error:", e);
+    res.status(500).json({ error: "Failed to clear memory" });
   }
 });
 

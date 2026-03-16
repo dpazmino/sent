@@ -38,12 +38,22 @@ router.get("/", async (req, res) => {
     const params: unknown[] = [];
     let pi = 1;
 
-    const { payment_system, status, min_probability, max_probability, search } = req.query as Record<string, string>;
+    const q = req.query as Record<string, string>;
+    // Accept both camelCase (from generated client) and snake_case (legacy)
+    const payment_system = q["paymentSystem"] || q["payment_system"];
+    const status = q["status"];
+    const min_probability = q["minProbability"] || q["min_probability"];
+    const max_probability = q["maxProbability"] || q["max_probability"];
+    const search = q["search"];
+    const dateFrom = q["dateFrom"] || q["date_from"];
+    const dateTo = q["dateTo"] || q["date_to"];
 
     if (payment_system) { conditions.push(`payment_system = $${pi++}`); params.push(payment_system); }
     if (status) { conditions.push(`status = $${pi++}`); params.push(status); }
     if (min_probability) { conditions.push(`probability >= $${pi++}`); params.push(Number(min_probability)); }
     if (max_probability) { conditions.push(`probability <= $${pi++}`); params.push(Number(max_probability)); }
+    if (dateFrom) { conditions.push(`detected_at >= $${pi++}`); params.push(dateFrom); }
+    if (dateTo) { conditions.push(`detected_at <= $${pi++}`); params.push(dateTo); }
     if (search) {
       conditions.push(`(payment1_id ILIKE $${pi} OR payment2_id ILIKE $${pi} OR sender_bic ILIKE $${pi} OR receiver_bic ILIKE $${pi})`);
       params.push(`%${search}%`); pi++;
@@ -62,12 +72,17 @@ router.get("/", async (req, res) => {
       [...params, pageSize, offset]
     );
 
+    // Return both schemas: new schema (items/limit/totalPages) and legacy (duplicates/pageSize/pages)
+    const mapped = rows.map(toCamel);
     res.json({
+      items: mapped,
+      duplicates: mapped,
       total,
       page,
+      limit: pageSize,
       pageSize,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
       pages: Math.max(1, Math.ceil(total / pageSize)),
-      duplicates: rows.map(toCamel),
     });
   } catch (e) {
     console.error("List duplicates error:", e);

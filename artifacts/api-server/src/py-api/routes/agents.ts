@@ -216,27 +216,32 @@ router.post("/graph-query", async (req, res) => {
   }
 });
 
-// Detector opinions for a payment
-router.post("/review-payment", async (req, res) => {
+// Detector opinions — handles both /detector-opinions (schema) and /review-payment (legacy)
+async function handleDetectorOpinions(req: import("express").Request, res: import("express").Response): Promise<void> {
   try {
     const { paymentIds } = req.body as { paymentIds: string[] };
+
+    if (!paymentIds?.length) { res.status(400).json({ error: "paymentIds required" }); return; }
 
     const rows = await query(
       `SELECT * FROM dup_duplicate_payments WHERE id = ANY($1::text[]) LIMIT 20`,
       [paymentIds]
     );
-    if (!rows.length) return res.status(404).json({ error: "No payments found" });
+    if (!rows.length) { res.status(404).json({ error: "No payments found" }); return; }
 
     const memoryRows = await query("SELECT content FROM dup_agent_memory ORDER BY updated_at DESC LIMIT 20");
     const memoryContext = memoryRows.map((r) => r["content"]).join("\n\n");
 
     const { opinions, consensus } = await getAllDetectorOpinions(rows, memoryContext);
-    return res.json({ opinions, consensus, reviewedCount: rows.length });
+    res.json({ opinions, consensus, reviewedCount: rows.length });
   } catch (e) {
     console.error("Review payment error:", e);
-    return res.status(500).json({ error: "Review failed" });
+    res.status(500).json({ error: "Review failed" });
   }
-});
+}
+
+router.post("/detector-opinions", handleDetectorOpinions);
+router.post("/review-payment", handleDetectorOpinions);
 
 router.get("/conversations", async (_req, res) => {
   try {

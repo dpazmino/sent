@@ -137,9 +137,9 @@ async function runScan(scanId: string): Promise<void> {
   }
 }
 
-router.get("/status", async (_req, res) => {
-  res.json({ ..._currentScan });
-});
+// GET /status and /scan/status both return current scan state
+router.get("/status", (_req, res) => { res.json({ ..._currentScan }); });
+router.get("/scan/status", (_req, res) => { res.json({ ..._currentScan }); });
 
 router.post("/scan", async (req, res) => {
   if (_currentScan["status"] === "running") {
