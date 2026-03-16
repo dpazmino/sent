@@ -15,6 +15,7 @@ import {
   Landmark,
   BookOpen,
   GitBranch,
+  Layers,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -33,6 +34,7 @@ const NAV_ITEMS = [
 const NAV_DOCS = [
   { href: "/guide", label: "How to Use", icon: BookOpen },
   { href: "/agents", label: "Agentic Flow", icon: GitBranch },
+  { href: "/architecture", label: "Architecture", icon: Layers },
 ];
 
 export function AppLayout({ children }: { children: ReactNode }) {
