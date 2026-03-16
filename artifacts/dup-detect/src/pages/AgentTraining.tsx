@@ -34,15 +34,15 @@ const CATEGORY_META: Record<string, { label: string; color: string; bg: string; 
 };
 
 const AGENT_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  master:                         Zap,
-  text_to_sql:                    Database,
-  graph_chart:                    BarChart2,
-  training:                       Brain,
-  detector_swift_specialist:      Shield,
-  detector_ach_specialist:        GitBranch,
-  detector_multisource_detector:  Network,
-  detector_fuzzymatch_engine:     Blend,
-  detector_patternanalysis_agent: Activity,
+  master:           Zap,
+  text_to_sql:      Database,
+  graph_agent:      BarChart2,
+  training_agent:   Brain,
+  swift_specialist: Shield,
+  ach_specialist:   GitBranch,
+  multisource:      Network,
+  fuzzymatch:       Blend,
+  pattern_analysis: Activity,
 };
 
 const CATEGORY_ORDER = ["orchestrator", "memory", "utility", "detector"];
