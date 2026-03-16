@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useUser } from "@/contexts/UserContext";
 import { Card } from "@/components/ui/Card";
@@ -316,17 +317,19 @@ function DetailRow({ label, value }: { label: string; value?: string | number | 
 function ReviewModal({
   review,
   userId,
+  userDisplayName,
   onClose,
   onStatusChange,
 }: {
   review: UserReview;
   userId: string;
+  userDisplayName: string;
   onClose: () => void;
   onStatusChange: (reviewId: string, status: string) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<"opinions" | "chat">("opinions");
   const [chatInput, setChatInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [isSending, setIsSending] = useState(false);
   const [currentStatus, setCurrentStatus] = useState(review.status);
   const [detectorOpinions, setDetectorOpinions] = useState<DetectorOpinion[]>([]);
   const [opinionsLoading, setOpinionsLoading] = useState(false);
@@ -368,8 +371,9 @@ function ReviewModal({
 
   const sendMessage = async (text?: string) => {
     const content = (text ?? chatInput).trim();
-    if (!content) return;
+    if (!content || isSending) return;
     setChatInput("");
+    setIsSending(true);
 
     const userMsg: ChatMessage = { role: "user", content };
     setMessages(prev => [...prev, userMsg]);
@@ -380,10 +384,7 @@ function ReviewModal({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: content,
-            detectorOpinions,
-          }),
+          body: JSON.stringify({ message: content, detectorOpinions }),
         }
       );
       const assistantMsg: ChatMessage = {
@@ -396,11 +397,13 @@ function ReviewModal({
         setCurrentStatus(data.currentStatus);
         onStatusChange(review.id, data.currentStatus);
       }
-    } catch (e) {
+    } catch {
       setMessages(prev => [
         ...prev,
         { role: "assistant", content: "Sorry, I couldn't process that request. Please try again." },
       ]);
+    } finally {
+      setIsSending(false);
     }
   };
 
@@ -418,24 +421,24 @@ function ReviewModal({
 
   const p = review.payment;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+  const modalContent = (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-3 bg-black/75 backdrop-blur-sm">
       <motion.div
-        initial={{ opacity: 0, scale: 0.97, y: 8 }}
+        initial={{ opacity: 0, scale: 0.96, y: 10 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.97 }}
+        exit={{ opacity: 0, scale: 0.96 }}
         transition={{ duration: 0.18 }}
-        className="bg-[#0e1420] border border-white/10 rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden"
+        className="bg-[#0b0f1a] border border-white/10 rounded-2xl shadow-2xl w-full max-w-[1400px] h-[90vh] flex flex-col overflow-hidden"
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/8">
+        {/* ── Header ───────────────────────────────────────────────────── */}
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/8 flex-shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-8 h-8 rounded-lg bg-violet-500/20 flex items-center justify-center flex-shrink-0">
               <Eye className="w-4 h-4 text-violet-400" />
             </div>
             <div className="min-w-0">
-              <p className="text-sm font-semibold text-white truncate">
-                {p.payment1Id} ↔ {p.payment2Id}
+              <p className="text-sm font-bold text-white font-mono">
+                {p.payment1Id} <span className="text-slate-500">↔</span> {p.payment2Id}
               </p>
               <p className="text-[11px] text-slate-500">{p.paymentSystem} · {p.duplicateType.replace(/_/g, " ")}</p>
             </div>
@@ -443,26 +446,29 @@ function ReviewModal({
           <div className="flex items-center gap-2 flex-shrink-0">
             <ProbabilityBadge probability={p.probability} />
             <StatusBadge status={currentStatus} />
-            <button onClick={onClose} className="ml-2 p-1.5 rounded-lg hover:bg-white/8 text-slate-400 hover:text-white transition-colors">
+            <button
+              onClick={onClose}
+              className="ml-2 p-1.5 rounded-lg hover:bg-white/8 text-slate-400 hover:text-white transition-colors"
+            >
               <X className="w-4 h-4" />
             </button>
           </div>
         </div>
 
-        {/* Status Actions */}
-        <div className="flex items-center gap-2 px-5 py-3 border-b border-white/5 bg-white/2">
-          <span className="text-[11px] text-slate-500 mr-1">Update status:</span>
+        {/* ── Status Actions bar ────────────────────────────────────────── */}
+        <div className="flex items-center gap-1.5 px-5 py-2 border-b border-white/5 bg-white/2 flex-shrink-0 flex-wrap">
+          <span className="text-[10px] text-slate-600 mr-1 uppercase tracking-wider">Set status:</span>
           {[
             { key: "confirmed_duplicate", label: "Confirm Duplicate", icon: CheckCircle2, cls: "text-red-400 border-red-400/30 hover:bg-red-400/10" },
-            { key: "dismissed",          label: "Dismiss",           icon: XCircle,      cls: "text-green-400 border-green-400/30 hover:bg-green-400/10" },
-            { key: "under_review",       label: "Under Review",      icon: AlertTriangle, cls: "text-blue-400 border-blue-400/30 hover:bg-blue-400/10" },
-            { key: "pending",            label: "Reset Pending",     icon: Clock,        cls: "text-yellow-400 border-yellow-400/30 hover:bg-yellow-400/10" },
+            { key: "dismissed",           label: "Dismiss (Not Dup)", icon: XCircle,       cls: "text-green-400 border-green-400/30 hover:bg-green-400/10" },
+            { key: "under_review",        label: "Under Review",      icon: AlertTriangle, cls: "text-blue-400 border-blue-400/30 hover:bg-blue-400/10" },
+            { key: "pending",             label: "Reset Pending",     icon: Clock,         cls: "text-yellow-400 border-yellow-400/30 hover:bg-yellow-400/10" },
           ].map(({ key, label, icon: Icon, cls }) => (
             <button
               key={key}
               disabled={currentStatus === key}
               onClick={() => updateStatus(key)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-all disabled:opacity-40 disabled:cursor-default ${cls} bg-transparent`}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-all disabled:opacity-35 disabled:cursor-default bg-transparent ${cls}`}
             >
               <Icon className="w-3 h-3" />
               {label}
@@ -470,25 +476,26 @@ function ReviewModal({
           ))}
         </div>
 
-        {/* Body */}
-        <div className="flex flex-1 min-h-0">
-          {/* Left: Payment Details */}
-          <div className="w-64 flex-shrink-0 border-r border-white/8 overflow-y-auto p-4">
-            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-3">Payment Details</p>
-            <div className="space-y-0">
-              <DetailRow label="Amount" value={formatCurrency(p.amount, p.currency)} />
-              <DetailRow label="System" value={p.paymentSystem} />
-              <DetailRow label="Type" value={p.duplicateType?.replace(/_/g, " ")} />
-              <DetailRow label="Sender BIC" value={p.senderBIC} />
+        {/* ── Three-Column Body ─────────────────────────────────────────── */}
+        <div className="flex flex-1 min-h-0 divide-x divide-white/6">
+
+          {/* ── Col 1: Payment Details (fixed width) ─────────────────── */}
+          <div className="w-56 flex-shrink-0 flex flex-col overflow-y-auto p-4 space-y-3">
+            <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Payment Details</p>
+            <div>
+              <DetailRow label="Amount"       value={formatCurrency(p.amount, p.currency)} />
+              <DetailRow label="System"       value={p.paymentSystem} />
+              <DetailRow label="Type"         value={p.duplicateType?.replace(/_/g, " ")} />
+              <DetailRow label="Sender BIC"   value={p.senderBIC} />
               <DetailRow label="Receiver BIC" value={p.receiverBIC} />
-              <DetailRow label="Date 1" value={p.paymentDate1 ? new Date(p.paymentDate1).toLocaleDateString() : undefined} />
-              <DetailRow label="Date 2" value={p.paymentDate2 ? new Date(p.paymentDate2).toLocaleDateString() : undefined} />
-              <DetailRow label="Originator" value={p.originatorCountry} />
-              <DetailRow label="Beneficiary" value={p.beneficiaryCountry} />
+              <DetailRow label="Date 1"       value={p.paymentDate1 ? new Date(p.paymentDate1).toLocaleDateString() : undefined} />
+              <DetailRow label="Date 2"       value={p.paymentDate2 ? new Date(p.paymentDate2).toLocaleDateString() : undefined} />
+              <DetailRow label="Originator"   value={p.originatorCountry} />
+              <DetailRow label="Beneficiary"  value={p.beneficiaryCountry} />
             </div>
             {p.matchedFields && p.matchedFields.length > 0 && (
-              <div className="mt-3">
-                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Matched Fields</p>
+              <div>
+                <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Matched Fields</p>
                 <div className="flex flex-wrap gap-1">
                   {p.matchedFields.map(f => (
                     <span key={f} className="text-[10px] bg-violet-500/15 text-violet-300 border border-violet-400/20 px-1.5 py-0.5 rounded">
@@ -500,152 +507,155 @@ function ReviewModal({
             )}
           </div>
 
-          {/* Right: Tabs */}
-          <div className="flex-1 flex flex-col min-w-0 min-h-0">
-            {/* Tabs */}
-            <div className="flex border-b border-white/8 px-4 pt-3 gap-1">
-              {[
-                { key: "opinions", label: "Detector Opinions", icon: BarChart3 },
-                { key: "chat",     label: "Review Chat",       icon: MessageSquare },
-              ].map(({ key, label, icon: Icon }) => (
-                <button
-                  key={key}
-                  onClick={() => setActiveTab(key as "opinions" | "chat")}
-                  className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-t-lg transition-colors border-b-2 -mb-px ${
-                    activeTab === key
-                      ? "text-white border-violet-500 bg-white/4"
-                      : "text-slate-500 border-transparent hover:text-slate-300"
-                  }`}
-                >
-                  <Icon className="w-3.5 h-3.5" />
-                  {label}
-                </button>
-              ))}
+          {/* ── Col 2: Detector Opinions ──────────────────────────────── */}
+          <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+            <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/6 flex-shrink-0">
+              <BarChart3 className="w-3.5 h-3.5 text-slate-500" />
+              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Detector Opinions</span>
+              {detectorOpinions.length > 0 && (() => {
+                const dups = detectorOpinions.filter(o => o.isDuplicate).length;
+                return (
+                  <span className={`ml-auto text-[11px] font-semibold ${dups >= 3 ? "text-red-400" : "text-green-400"}`}>
+                    {dups}/5 say duplicate
+                  </span>
+                );
+              })()}
             </div>
-
-            {/* Tab Content */}
-            <div className="flex-1 min-h-0 overflow-hidden">
-              {activeTab === "opinions" && (
-                <div className="h-full overflow-y-auto p-4 space-y-3">
-                  {opinionsLoading ? (
-                    <div className="flex flex-col items-center justify-center h-40 gap-2 text-slate-500">
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                      <p className="text-xs">Consulting 5 detector agents…</p>
-                    </div>
-                  ) : detectorOpinions.length > 0 ? (
-                    <>
-                      {/* Consensus header */}
-                      {(() => {
-                        const dups = detectorOpinions.filter(o => o.isDuplicate).length;
-                        return (
-                          <div className="flex items-center justify-between bg-white/4 border border-white/8 rounded-lg px-3 py-2 mb-1">
-                            <span className="text-xs text-slate-400">Agent Consensus</span>
-                            <span className={`text-xs font-semibold ${dups >= 3 ? "text-red-400" : "text-green-400"}`}>
-                              {dups}/5 agents say duplicate
-                            </span>
-                          </div>
-                        );
-                      })()}
-                      {detectorOpinions.map((op, i) => (
-                        <OpinionCard key={i} op={op} />
-                      ))}
-                    </>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center h-40 gap-2 text-slate-500">
-                      <Brain className="w-6 h-6" />
-                      <p className="text-xs">No opinions available</p>
-                    </div>
-                  )}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {opinionsLoading ? (
+                <div className="flex flex-col items-center justify-center h-40 gap-2 text-slate-500">
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <p className="text-xs">Consulting 5 detector agents…</p>
                 </div>
-              )}
-
-              {activeTab === "chat" && (
-                <div className="flex flex-col h-full">
-                  {/* Messages */}
-                  <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                    {messages.length === 0 && (
-                      <div className="flex flex-col items-center justify-center h-32 gap-3 text-slate-500">
-                        <Bot className="w-7 h-7" />
-                        <p className="text-xs text-center max-w-xs">
-                          Chat with the Review Agent about this payment.<br />
-                          Ask for analysis or tell it to update the status.
-                        </p>
-                        <div className="flex flex-wrap justify-center gap-1.5 mt-1">
-                          {[
-                            "Analyze this payment",
-                            "What fields matched?",
-                            "Is this a standing order?",
-                            "Confirm as duplicate",
-                            "Dismiss this",
-                          ].map(s => (
-                            <button
-                              key={s}
-                              onClick={() => sendMessage(s)}
-                              className="text-[10px] bg-white/5 border border-white/10 text-slate-400 hover:text-white hover:bg-white/10 px-2 py-1 rounded-full transition-colors"
-                            >
-                              {s}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {messages.map((msg, i) => (
-                      <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                        <div className={`flex gap-2 max-w-[85%] ${msg.role === "user" ? "flex-row-reverse" : ""}`}>
-                          <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${
-                            msg.role === "user" ? "bg-violet-600" : "bg-slate-700"
-                          }`}>
-                            {msg.role === "user" ? <User className="w-3 h-3 text-white" /> : <Bot className="w-3 h-3 text-violet-300" />}
-                          </div>
-                          <div>
-                            <div className={`rounded-xl px-3 py-2 text-xs leading-relaxed ${
-                              msg.role === "user"
-                                ? "bg-violet-600/80 text-white"
-                                : "bg-white/8 text-slate-200"
-                            }`}>
-                              {msg.content}
-                            </div>
-                            {msg.statusUpdate && (
-                              <div className="mt-1 text-[10px] text-violet-400 flex items-center gap-1">
-                                <CheckCircle2 className="w-3 h-3" />
-                                Status updated to: {msg.statusUpdate.replace(/_/g, " ")}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                    <div ref={chatEndRef} />
-                  </div>
-
-                  {/* Input */}
-                  <div className="p-3 border-t border-white/8">
-                    <div className="flex gap-2">
-                      <input
-                        ref={inputRef}
-                        value={chatInput}
-                        onChange={e => setChatInput(e.target.value)}
-                        onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-                        placeholder="Ask about this payment or say 'confirm as duplicate'…"
-                        className="flex-1 bg-white/6 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-violet-500/50"
-                      />
-                      <button
-                        onClick={() => sendMessage()}
-                        disabled={!chatInput.trim()}
-                        className="w-8 h-8 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors"
-                      >
-                        <Send className="w-3.5 h-3.5 text-white" />
-                      </button>
-                    </div>
-                  </div>
+              ) : detectorOpinions.length > 0 ? (
+                detectorOpinions.map((op, i) => <OpinionCard key={i} op={op} />)
+              ) : (
+                <div className="flex flex-col items-center justify-center h-40 gap-2 text-slate-500">
+                  <Brain className="w-6 h-6" />
+                  <p className="text-xs">No opinions available</p>
                 </div>
               )}
             </div>
           </div>
+
+          {/* ── Col 3: Training Agent Chat ────────────────────────────── */}
+          <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+            {/* Chat header with memory badge */}
+            <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/6 flex-shrink-0">
+              <Brain className="w-3.5 h-3.5 text-violet-400" />
+              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Training Agent</span>
+              <span className="ml-auto flex items-center gap-1 text-[10px] bg-violet-500/15 text-violet-300 border border-violet-400/20 px-2 py-0.5 rounded-full">
+                <Sparkles className="w-2.5 h-2.5" />
+                {userDisplayName}'s Memory
+              </span>
+            </div>
+
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {messages.length === 0 && (
+                <div className="flex flex-col items-center justify-center h-32 gap-3 text-slate-500 pt-4">
+                  <Bot className="w-7 h-7" />
+                  <p className="text-xs text-center leading-relaxed text-slate-500 max-w-[220px]">
+                    Your training agent remembers every rule you teach it across all payment reviews.
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-1.5 mt-1">
+                    {[
+                      "Analyze this payment",
+                      "This is not a duplicate",
+                      "Confirm as duplicate",
+                      "What do you remember?",
+                      "Is this a standing order?",
+                    ].map(s => (
+                      <button
+                        key={s}
+                        onClick={() => sendMessage(s)}
+                        className="text-[10px] bg-white/5 border border-white/10 text-slate-400 hover:text-white hover:bg-white/10 px-2 py-1 rounded-full transition-colors"
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {messages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div className={`flex gap-2 max-w-[90%] ${msg.role === "user" ? "flex-row-reverse" : ""}`}>
+                    <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${
+                      msg.role === "user" ? "bg-violet-600" : "bg-violet-900/60"
+                    }`}>
+                      {msg.role === "user"
+                        ? <User className="w-3 h-3 text-white" />
+                        : <Brain className="w-3 h-3 text-violet-300" />}
+                    </div>
+                    <div>
+                      <div className={`rounded-xl px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap ${
+                        msg.role === "user"
+                          ? "bg-violet-600/80 text-white"
+                          : "bg-white/6 border border-white/8 text-slate-200"
+                      }`}>
+                        {msg.content}
+                      </div>
+                      {msg.statusUpdate && (
+                        <div className="mt-1 text-[10px] text-violet-400 flex items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3" />
+                          Status updated → {msg.statusUpdate.replace(/_/g, " ")}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              {isSending && (
+                <div className="flex justify-start">
+                  <div className="flex gap-2 items-center">
+                    <div className="w-6 h-6 rounded-full bg-violet-900/60 flex items-center justify-center">
+                      <Brain className="w-3 h-3 text-violet-300" />
+                    </div>
+                    <div className="bg-white/6 border border-white/8 rounded-xl px-3 py-2 flex gap-1">
+                      <span className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce [animation-delay:0ms]" />
+                      <span className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce [animation-delay:150ms]" />
+                      <span className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce [animation-delay:300ms]" />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* Input */}
+            <div className="p-3 border-t border-white/8 flex-shrink-0">
+              <div className="flex gap-2">
+                <input
+                  ref={inputRef}
+                  value={chatInput}
+                  onChange={e => setChatInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
+                  disabled={isSending}
+                  placeholder={`Teach ${userDisplayName}'s agent or ask about this payment…`}
+                  className="flex-1 bg-white/6 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-violet-500/50 disabled:opacity-60"
+                />
+                <button
+                  onClick={() => sendMessage()}
+                  disabled={!chatInput.trim() || isSending}
+                  className="w-8 h-8 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors flex-shrink-0"
+                >
+                  {isSending
+                    ? <Loader2 className="w-3.5 h-3.5 text-white animate-spin" />
+                    : <Send className="w-3.5 h-3.5 text-white" />}
+                </button>
+              </div>
+            </div>
+          </div>
+
         </div>
       </motion.div>
     </div>
   );
+
+  return createPortal(modalContent, document.body);
 }
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
@@ -1001,6 +1011,7 @@ export default function DuplicatesList() {
           <ReviewModal
             review={selectedReview}
             userId={user.id}
+            userDisplayName={user.displayName}
             onClose={() => setSelectedReview(null)}
             onStatusChange={handleStatusChange}
           />

@@ -266,10 +266,17 @@ async def chat_with_review_agent(
         "_reviewer_name": user.display_name,
     }
 
-    # Load DB history for restart recovery
+    # Restart recovery: load the analyst's FULL message history across ALL their reviews.
+    # The Training Agent memory is keyed by user_id, so we need the complete history.
+    user_review_ids = [
+        r.id
+        for r in db.query(UserReviewRecord)
+        .filter(UserReviewRecord.user_id == user_id)
+        .all()
+    ]
     history_records = (
         db.query(UserReviewMessageRecord)
-        .filter(UserReviewMessageRecord.review_id == review_id)
+        .filter(UserReviewMessageRecord.review_id.in_(user_review_ids))
         .order_by(UserReviewMessageRecord.timestamp)
         .all()
     )
@@ -277,7 +284,8 @@ async def chat_with_review_agent(
 
     result = await run_review_agent(
         user_message=message,
-        review_id=review_id,
+        user_id=user_id,
+        reviewer_name=user.display_name,
         payment_data=payment_data,
         detector_opinions=detector_opinions,
         db_history=db_history,
