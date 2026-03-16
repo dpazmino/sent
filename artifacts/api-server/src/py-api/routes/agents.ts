@@ -201,7 +201,15 @@ router.post("/graph-query", async (req, res) => {
     const memoryContext = memoryRows.map((r) => r["content"]).join("\n\n");
 
     const chartSpec = await generateGraphSpec(nlQuery, sql, results, memoryContext);
-    res.json({ sql, rowCount: results.length, chartSpec });
+
+    // Extract explanation from chartSpec and promote to top level to match GraphQueryResponse schema
+    const { explanation, ...graphSpec } = chartSpec as Record<string, unknown>;
+    res.json({
+      graphSpec,
+      explanation: explanation ?? "",
+      sqlUsed: sql,
+      rowCount: results.length,
+    });
   } catch (e) {
     console.error("Graph query error:", e);
     res.status(500).json({ error: "Graph query failed" });
