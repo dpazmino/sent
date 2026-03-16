@@ -5,89 +5,182 @@ const router = Router();
 
 router.get("/stats", async (_req, res) => {
   try {
-    const [totals] = await query<{ total: string; pending: string; confirmed: string; dismissed: string; under_review: string }>(
+    const [totals] = await query<{
+      total: string;
+      pending: string;
+      confirmed: string;
+      dismissed: string;
+      under_review: string;
+      high: string;
+      medium: string;
+      low: string;
+      amount_at_risk: string;
+    }>(
       `SELECT
         COUNT(*) AS total,
         COUNT(*) FILTER (WHERE status = 'pending') AS pending,
         COUNT(*) FILTER (WHERE status = 'confirmed_duplicate') AS confirmed,
         COUNT(*) FILTER (WHERE status = 'dismissed') AS dismissed,
-        COUNT(*) FILTER (WHERE status = 'under_review') AS under_review
+        COUNT(*) FILTER (WHERE status = 'under_review') AS under_review,
+        COUNT(*) FILTER (WHERE probability >= 0.8) AS high,
+        COUNT(*) FILTER (WHERE probability >= 0.5 AND probability < 0.8) AS medium,
+        COUNT(*) FILTER (WHERE probability < 0.5) AS low,
+        COALESCE(SUM(amount) FILTER (WHERE status IN ('pending','confirmed_duplicate','under_review')), 0) AS amount_at_risk
       FROM dup_duplicate_payments`
     );
 
-    const topCorridor = await query<{ corridor: string; count: string; total_amount: string }>(
-      `SELECT CONCAT(originator_country, '->', beneficiary_country) AS corridor,
-        COUNT(*) AS count, SUM(amount) AS total_amount
+    const bySystemRows = await query<{ payment_system: string; count: string }>(
+      `SELECT payment_system, COUNT(*) AS count
        FROM dup_duplicate_payments
-       WHERE originator_country IS NOT NULL AND beneficiary_country IS NOT NULL
-       GROUP BY corridor ORDER BY count DESC LIMIT 10`
+       GROUP BY payment_system
+       ORDER BY count DESC`
     );
 
-    const bySystem = await query<{ payment_system: string; count: string; total_amount: string; avg_probability: string }>(
-      `SELECT payment_system, COUNT(*) AS count, SUM(amount) AS total_amount, AVG(probability) AS avg_probability
-       FROM dup_duplicate_payments GROUP BY payment_system ORDER BY count DESC`
-    );
+    const byPaymentSystem: Record<string, number> = {};
+    for (const r of bySystemRows) {
+      byPaymentSystem[r.payment_system] = Number(r.count);
+    }
 
-    const byType = await query<{ duplicate_type: string; count: string }>(
-      `SELECT duplicate_type, COUNT(*) AS count FROM dup_duplicate_payments GROUP BY duplicate_type ORDER BY count DESC`
-    );
-
-    const exposureByCurrency = await query<{ currency: string; total_amount: string; count: string }>(
-      `SELECT currency, SUM(amount) AS total_amount, COUNT(*) AS count
-       FROM dup_duplicate_payments WHERE status IN ('pending','confirmed_duplicate')
-       GROUP BY currency ORDER BY total_amount DESC LIMIT 10`
-    );
-
-    const recentTrend = await query<{ day: string; count: string; total_amount: string }>(
-      `SELECT date_trunc('day', detected_at)::date AS day, COUNT(*) AS count, SUM(amount) AS total_amount
-       FROM dup_duplicate_payments WHERE detected_at >= NOW() - INTERVAL '30 days'
-       GROUP BY day ORDER BY day`
-    );
-
-    const highRisk = await query<{ id: string; payment1_id: string; payment2_id: string; probability: number; amount: number; currency: string; payment_system: string; duplicate_type: string; status: string; detected_at: string }>(
-      `SELECT id, payment1_id, payment2_id, probability, amount, currency, payment_system, duplicate_type, status, detected_at
-       FROM dup_duplicate_payments WHERE probability >= 0.85 AND status = 'pending'
-       ORDER BY probability DESC, amount DESC LIMIT 10`
+    const [latestScan] = await query<{ last_scan: string }>(
+      `SELECT MAX(detected_at) AS last_scan FROM dup_duplicate_payments`
     );
 
     res.json({
-      totals: {
-        total: Number(totals.total),
-        pending: Number(totals.pending),
-        confirmed: Number(totals.confirmed),
-        dismissed: Number(totals.dismissed),
-        underReview: Number(totals.under_review),
-      },
-      topCorridors: topCorridor.map((r) => ({
-        corridor: r.corridor,
-        count: Number(r.count),
-        totalAmount: Number(r.total_amount),
-      })),
-      byPaymentSystem: bySystem.map((r) => ({
-        paymentSystem: r.payment_system,
-        count: Number(r.count),
-        totalAmount: Number(r.total_amount),
-        avgProbability: Math.round(Number(r.avg_probability) * 10000) / 10000,
-      })),
-      byDuplicateType: byType.map((r) => ({
-        duplicateType: r.duplicate_type,
-        count: Number(r.count),
-      })),
-      exposureByCurrency: exposureByCurrency.map((r) => ({
-        currency: r.currency,
-        totalAmount: Number(r.total_amount),
-        count: Number(r.count),
-      })),
-      recentTrend: recentTrend.map((r) => ({
-        day: String(r.day),
-        count: Number(r.count),
-        totalAmount: Number(r.total_amount),
-      })),
-      highRiskAlerts: highRisk,
+      totalDuplicatesFound: Number(totals.total),
+      highProbabilityCount: Number(totals.high),
+      mediumProbabilityCount: Number(totals.medium),
+      lowProbabilityCount: Number(totals.low),
+      totalAmountAtRisk: Number(totals.amount_at_risk),
+      confirmedDuplicates: Number(totals.confirmed),
+      pendingReview: Number(totals.pending),
+      dismissedCount: Number(totals.dismissed),
+      byPaymentSystem,
+      lastScanAt: latestScan?.last_scan ?? null,
+      scanCoverage: 100,
     });
   } catch (e) {
     console.error("Dashboard stats error:", e);
     res.status(500).json({ error: "Failed to load dashboard stats" });
+  }
+});
+
+router.get("/trend", async (req, res) => {
+  try {
+    const period = String(req.query.period ?? "monthly");
+
+    let truncUnit: string;
+    let interval: string;
+    if (period === "weekly") {
+      truncUnit = "week";
+      interval = "12 weeks";
+    } else if (period === "daily") {
+      truncUnit = "day";
+      interval = "30 days";
+    } else {
+      truncUnit = "month";
+      interval = "12 months";
+    }
+
+    const rows = await query<{
+      date: string;
+      count: string;
+      total_amount: string;
+      avg_probability: string;
+    }>(
+      `SELECT
+        TO_CHAR(date_trunc('${truncUnit}', detected_at), 'YYYY-MM-DD') AS date,
+        COUNT(*) AS count,
+        COALESCE(SUM(amount), 0) AS total_amount,
+        COALESCE(AVG(probability), 0) AS avg_probability
+       FROM dup_duplicate_payments
+       WHERE detected_at >= NOW() - INTERVAL '${interval}'
+       GROUP BY date_trunc('${truncUnit}', detected_at)
+       ORDER BY date_trunc('${truncUnit}', detected_at)`
+    );
+
+    res.json({
+      data: rows.map((r) => ({
+        date: String(r.date),
+        count: Number(r.count),
+        amount: Number(r.total_amount),
+        avgProbability: Math.round(Number(r.avg_probability) * 10000) / 10000,
+      })),
+      period,
+    });
+  } catch (e) {
+    console.error("Dashboard trend error:", e);
+    res.status(500).json({ error: "Failed to load trend data" });
+  }
+});
+
+router.get("/by-system", async (_req, res) => {
+  try {
+    const rows = await query<{
+      payment_system: string;
+      count: string;
+      total_amount: string;
+    }>(
+      `SELECT
+        payment_system,
+        COUNT(*) AS count,
+        COALESCE(SUM(amount), 0) AS total_amount
+       FROM dup_duplicate_payments
+       GROUP BY payment_system
+       ORDER BY count DESC`
+    );
+
+    const total = rows.reduce((s, r) => s + Number(r.count), 0) || 1;
+
+    res.json({
+      data: rows.map((r) => ({
+        system: r.payment_system,
+        count: Number(r.count),
+        amount: Number(r.total_amount),
+        percentage: Math.round((Number(r.count) / total) * 10000) / 100,
+      })),
+    });
+  } catch (e) {
+    console.error("Dashboard by-system error:", e);
+    res.status(500).json({ error: "Failed to load by-system data" });
+  }
+});
+
+router.get("/corridor-analysis", async (_req, res) => {
+  try {
+    const rows = await query<{
+      originator_country: string;
+      beneficiary_country: string;
+      count: string;
+      total_amount: string;
+      avg_probability: string;
+    }>(
+      `SELECT
+        originator_country,
+        beneficiary_country,
+        COUNT(*) AS count,
+        COALESCE(SUM(amount), 0) AS total_amount,
+        COALESCE(AVG(probability), 0) AS avg_probability
+       FROM dup_duplicate_payments
+       WHERE originator_country IS NOT NULL AND beneficiary_country IS NOT NULL
+       GROUP BY originator_country, beneficiary_country
+       ORDER BY count DESC
+       LIMIT 50`
+    );
+
+    res.json({
+      corridors: rows.map((r) => ({
+        originCountry: r.originator_country,
+        destCountry: r.beneficiary_country,
+        corridor: `${r.originator_country}->${r.beneficiary_country}`,
+        duplicateCount: Number(r.count),
+        totalAmount: Number(r.total_amount),
+        avgProbability: Math.round(Number(r.avg_probability) * 10000) / 10000,
+      })),
+      totalCorridors: rows.length,
+    });
+  } catch (e) {
+    console.error("Corridor analysis error:", e);
+    res.status(500).json({ error: "Failed to load corridor analysis" });
   }
 });
 
