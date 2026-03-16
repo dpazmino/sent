@@ -50,10 +50,13 @@ type UserReview = {
 
 type DetectorOpinion = {
   agentName: string;
+  agentDescription?: string;
+  agentFocus?: string;
   isDuplicate: boolean;
   confidence: number;
   reasoning: string;
   duplicateType?: string;
+  specialistFindings?: string;
 };
 
 type ChatMessage = {
@@ -295,7 +298,21 @@ function OpinionCard({ op }: { op: DetectorOpinion }) {
           style={{ width: `${pct}%` }}
         />
       </div>
+      {op.agentFocus && (
+        <p className="text-[10px] text-slate-500 italic">Focus: {op.agentFocus}</p>
+      )}
       <p className="text-[11px] text-slate-400 leading-relaxed">{op.reasoning}</p>
+      {op.specialistFindings && op.specialistFindings !== op.reasoning && (
+        <div className="border-t border-white/8 pt-2">
+          <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">Specialist Findings</p>
+          <p className="text-[11px] text-slate-400/80 leading-relaxed italic">{op.specialistFindings}</p>
+        </div>
+      )}
+      {op.duplicateType && (
+        <span className="inline-block text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20 font-mono">
+          {op.duplicateType}
+        </span>
+      )}
     </div>
   );
 }

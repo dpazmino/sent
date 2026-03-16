@@ -7,6 +7,7 @@ export const DETECTOR_AGENTS = [
     name: "SWIFT_Specialist",
     description: "Expert in SWIFT MT and MX payment duplicate detection. Specializes in UETR matching, field 20/32A analysis.",
     focus: "SWIFT_MT, SWIFT_MX",
+    agentInstruction: `As the SWIFT Specialist, apply your UETR / Field-20 / EndToEndId detection tree. Report: (1) the SWIFT message type found, (2) the specific identifier fields you checked (UETR, EndToEndId, InstrId, Field 20 TRN), (3) your decision step (Step 1–5 from your decision tree), and (4) any MT-to-MX migration risk. If this is not a SWIFT payment, state that clearly and give your best-effort assessment on the fields available.`,
     systemPrompt: `You are a senior SWIFT payment operations specialist with 15+ years of experience in correspondent banking, ISO 20022 migration, and financial crime compliance. You are the primary authority on detecting duplicate payments across SWIFT MT and SWIFT MX (ISO 20022) message formats.
 
 ## YOUR EXPERTISE
@@ -42,6 +43,7 @@ Respond with JSON array of assessments.`,
     name: "ACH_Specialist",
     description: "Expert in ACH transaction duplicate detection. Focuses on trace numbers, batch processing, and routing numbers.",
     focus: "ACH",
+    agentInstruction: `As the ACH Specialist, apply your Trace Number and NACHA composite-key detection tree. Report: (1) the SEC code found (CCD, PPD, CTX, WEB, TEL, IAT, RCK), (2) the trace number(s) and whether they match, (3) your composite key check (Routing + Account + Amount + Effective Date + Individual ID), (4) any return/retry pattern (R-code), and (5) whether this is a file-level duplicate. If this is not an ACH payment, state that explicitly and note what ACH-adjacent patterns you observed.`,
     systemPrompt: `You are a senior ACH operations specialist with deep expertise in NACHA Operating Rules, Federal Reserve ACH processing, and same-day ACH. 12+ years identifying duplicate ACH entries in high-volume payment processing environments.
 
 ## YOUR EXPERTISE
@@ -75,6 +77,7 @@ Respond with JSON array of assessments.`,
     name: "MultiSource_Detector",
     description: "Specializes in detecting payments submitted from multiple source systems (core banking + treasury + correspondent).",
     focus: "INTERNAL, multi-source",
+    agentInstruction: `As the MultiSource Detector, apply your cross-system identifier and temporal proximity checks. Report: (1) the source systems identified (CBS, TMS, Trade Finance, Correspondent, Payments Hub, ERP, Digital, Loan Origination), (2) whether the same internal_ref appears across different source_system values, (3) the time delta between submissions and whether this matches API retry or failover patterns, (4) which of the 8 source system conflict patterns applies, and (5) whether this could be an intraday liquidity sweep or netting (false positive exclusions).`,
     systemPrompt: `You are a senior payments architecture specialist with 14+ years of experience in multi-source payment deduplication, core banking integration, and enterprise payment hub design at tier-1 banks.
 
 ## YOUR EXPERTISE
@@ -109,6 +112,7 @@ Respond with JSON array of assessments.`,
     name: "FuzzyMatch_Engine",
     description: "Uses fuzzy logic to detect near-duplicate payments with slight variations in amount, date, or reference.",
     focus: "All payment systems, fuzzy matching",
+    agentInstruction: `As the FuzzyMatch Engine, apply your quantitative fuzzy matching framework. Report: (1) the amount similarity score (exact formula: |A-B|/max(A,B)), (2) the date difference in business days and the deduction applied, (3) the Levenshtein / normalized reference comparison result, (4) the Jaro-Winkler beneficiary name score, (5) your corridor match result, and (6) your final computed confidence score with the base + all additions/deductions shown. Even if identifiers match exactly, walk through your fuzzy scoring steps to validate.`,
     systemPrompt: `You are a senior quantitative analyst specialising in fuzzy matching algorithms for financial transaction deduplication. You designed fuzzy deduplication engines processing 50M+ transactions/day at global custodian banks.
 
 ## WHY EXACT MATCHING IS INSUFFICIENT
@@ -134,6 +138,7 @@ Respond with JSON array of assessments.`,
     name: "PatternAnalysis_Agent",
     description: "Analyzes temporal and behavioral patterns to identify systematic duplicate payment issues.",
     focus: "Pattern analysis across all payment systems",
+    agentInstruction: `As the Pattern Analysis Agent, apply your behavioral pattern taxonomy. Report: (1) the time delta between the two payment dates and which pattern class (1–7) it falls into, (2) the field overlap score (originator + beneficiary + amount + currency) and your temporal weight multiplier, (3) the source system context (same/different source, same/different payment system), (4) whether this could be a standing order, payroll run, securities DVP, or regulatory payment (false positive exclusions), and (5) your final confidence score built from your weighted pattern steps.`,
     systemPrompt: `You are a senior payments fraud and operations analyst specialising in behavioral pattern detection and systemic duplicate payment investigation. You led post-incident analysis of major duplicate payment events at central banks and global tier-1 institutions.
 
 ## PATTERN TAXONOMY
@@ -202,13 +207,31 @@ export async function getDetectorOpinion(
   paymentsData: Record<string, unknown>[],
   memoryContext = ""
 ): Promise<Record<string, unknown>[]> {
-  const llm = getLLM(0.05, 3000);
+  const llm = getLLM(0.25, 3000);
   let system = agent.systemPrompt;
   if (memoryContext) {
-    system += `\n\n## ANALYST-CONFIRMED RULES (THESE OVERRIDE YOUR GENERAL KNOWLEDGE):\n${memoryContext}`;
+    system += `\n\n## ANALYST-CONFIRMED RULES (apply these where relevant, but still complete your specialist analysis):\n${memoryContext}`;
   }
   const paymentsJson = JSON.stringify(paymentsData.slice(0, 20), null, 2);
-  const prompt = `Review these suspected duplicate payment pairs and assess each one.\n\nPayment pairs to review:\n${paymentsJson}\n\nFor each pair, return a JSON object:\n{\n  "paymentId": "the duplicate record ID",\n  "isDuplicate": true/false,\n  "confidence": 0.0-1.0,\n  "reasoning": "2-3 sentence explanation citing specific fields and decision step",\n  "duplicateType": "the type of duplicate"\n}\n\nReturn a JSON array. Be precise — cite the exact fields that matched or didn't match.`;
+
+  const agentInstruction = agent.agentInstruction ?? `As ${agent.name}, analyze from your specialist perspective (${agent.focus}).`;
+
+  const prompt = `${agentInstruction}
+
+Payment data to analyze:
+${paymentsJson}
+
+For EACH payment record, return a JSON object with:
+{
+  "paymentId": "<the record id field>",
+  "isDuplicate": true or false,
+  "confidence": 0.0–1.0,
+  "reasoning": "3–4 sentences applying YOUR specialist methodology — cite specific field values, your decision step number, and your domain-specific indicators. Do NOT just repeat a general rule; walk through YOUR detection tree.",
+  "duplicateType": "the specific duplicate type from your taxonomy",
+  "specialistFindings": "1–2 sentences on what YOUR domain-specific checks found (e.g. UETR match, Trace Number match, source system conflict, fuzzy score breakdown, pattern class)"
+}
+
+Return a valid JSON array. Do not add any text before or after the JSON.`;
 
   const graph = new StateGraph(MessagesAnnotation).addNode("agent", async (state: any) => {
     const messages = [new SystemMessage(system), ...state.messages];
@@ -231,6 +254,7 @@ export async function getDetectorOpinion(
       confidence: 0.5,
       reasoning: "Parse error — AI response could not be parsed",
       duplicateType: "unknown",
+      specialistFindings: "",
     }));
   }
 }
@@ -247,10 +271,13 @@ export async function getAllDetectorOpinions(
         allOpinions.push({
           paymentId: op["paymentId"] || "",
           agentName: agent.name,
+          agentDescription: agent.description,
+          agentFocus: agent.focus,
           isDuplicate: op["isDuplicate"] ?? true,
           confidence: op["confidence"] ?? 0.5,
           reasoning: op["reasoning"] || "",
           duplicateType: op["duplicateType"] || "",
+          specialistFindings: op["specialistFindings"] || "",
         });
       }
     } catch (e) {

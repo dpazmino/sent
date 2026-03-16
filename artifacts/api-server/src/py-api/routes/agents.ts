@@ -7,9 +7,29 @@ import { getAllDetectorOpinions, DETECTOR_AGENTS } from "../agents/detectorAgent
 
 const router = Router();
 
-// Agent metadata
-const AGENTS_METADATA = [
-  {
+// Build the enriched agent list from actual agent module definitions
+function buildAgentList(includePrompts: boolean) {
+  const detectorMeta: Record<string, { id: string; name: string; role: string; icon: string; capabilities: string[] }> = {
+    SWIFT_Specialist:     { id: "swift_specialist",  name: "SWIFT Specialist",       role: "SWIFT Detector",       icon: "🔀", capabilities: ["swift-mt", "swift-mx", "uetr-matching", "field20-analysis"] },
+    ACH_Specialist:       { id: "ach_specialist",     name: "ACH Specialist",          role: "ACH Detector",         icon: "🏦", capabilities: ["ach", "trace-numbers", "nacha", "sec-codes"] },
+    MultiSource_Detector: { id: "multisource",        name: "MultiSource Detector",    role: "Multi-Source Detector",icon: "🔗", capabilities: ["multi-source", "internal", "cross-system"] },
+    FuzzyMatch_Engine:    { id: "fuzzymatch",         name: "FuzzyMatch Engine",       role: "Fuzzy Matcher",        icon: "🔍", capabilities: ["fuzzy-matching", "amount-tolerance", "date-proximity"] },
+    PatternAnalysis_Agent:{ id: "pattern_analysis",   name: "Pattern Analysis Agent",  role: "Pattern Detector",     icon: "📊", capabilities: ["pattern-analysis", "temporal-analysis", "systemic-issues"] },
+  };
+
+  const detectorAgents = DETECTOR_AGENTS.map((agent) => {
+    const meta = detectorMeta[agent.name] ?? { id: agent.name.toLowerCase(), name: agent.name, role: "Detector", icon: "🤖", capabilities: [] };
+    return {
+      ...meta,
+      model: "gpt-4o-mini",
+      description: agent.description,
+      focus: agent.focus,
+      agentInstruction: agent.agentInstruction,
+      ...(includePrompts ? { systemPrompt: agent.systemPrompt } : {}),
+    };
+  });
+
+  const masterAgent = {
     id: "master",
     name: "Master Agent",
     role: "Orchestrator",
@@ -17,88 +37,60 @@ const AGENTS_METADATA = [
     icon: "🧠",
     model: "gpt-4o-mini",
     capabilities: ["orchestration", "analysis", "regulatory-guidance", "swift-mt", "swift-mx", "ach", "internal"],
-  },
-  {
-    id: "swift_specialist",
-    name: "SWIFT Specialist",
-    role: "SWIFT Detector",
-    description: "Expert in SWIFT MT and MX payment duplicate detection. Specializes in UETR matching, Field 20/32A analysis, and MT-to-MX migration duplicates.",
-    icon: "🔀",
-    model: "gpt-4o-mini",
-    capabilities: ["swift-mt", "swift-mx", "uetr-matching", "field20-analysis"],
-  },
-  {
-    id: "ach_specialist",
-    name: "ACH Specialist",
-    role: "ACH Detector",
-    description: "Expert in ACH duplicate detection. Focuses on trace numbers, batch processing, SEC codes, and NACHA Operating Rules.",
-    icon: "🏦",
-    model: "gpt-4o-mini",
-    capabilities: ["ach", "trace-numbers", "nacha", "sec-codes"],
-  },
-  {
-    id: "multisource",
-    name: "MultiSource Detector",
-    role: "Multi-Source Detector",
-    description: "Specializes in detecting payments submitted from multiple source systems simultaneously (core banking + treasury + correspondent).",
-    icon: "🔗",
-    model: "gpt-4o-mini",
-    capabilities: ["multi-source", "internal", "cross-system"],
-  },
-  {
-    id: "fuzzymatch",
-    name: "FuzzyMatch Engine",
-    role: "Fuzzy Matcher",
-    description: "Uses fuzzy logic to detect near-duplicate payments with slight variations in amount, date, or reference.",
-    icon: "🔍",
-    model: "gpt-4o-mini",
-    capabilities: ["fuzzy-matching", "amount-tolerance", "date-proximity"],
-  },
-  {
-    id: "pattern_analysis",
-    name: "Pattern Analysis Agent",
-    role: "Pattern Detector",
-    description: "Analyzes temporal and behavioral patterns to identify systematic duplicate payment issues including batch reprocessing and system failover scenarios.",
-    icon: "📊",
-    model: "gpt-4o-mini",
-    capabilities: ["pattern-analysis", "temporal-analysis", "systemic-issues"],
-  },
-  {
-    id: "text_to_sql",
-    name: "Text-to-SQL Agent",
-    role: "SQL Generator",
-    description: "Translates natural language questions into safe PostgreSQL SELECT queries against the Sentinel database.",
-    icon: "🗄️",
-    model: "gpt-4o-mini",
-    capabilities: ["sql-generation", "schema-aware"],
-  },
-  {
-    id: "graph_agent",
-    name: "Graph & Chart Agent",
-    role: "Visualisation",
-    description: "Transforms SQL query results into publication-quality chart specifications for the analytics dashboard.",
-    icon: "📈",
-    model: "gpt-4o-mini",
-    capabilities: ["chart-generation", "data-visualisation"],
-  },
-  {
-    id: "training_agent",
-    name: "Training Agent",
-    role: "Knowledge Custodian",
-    description: "Builds and validates the institutional knowledge base used by all other agents. Learns duplicate rules and database schema from analysts.",
-    icon: "🎓",
-    model: "gpt-4o-mini",
-    capabilities: ["rule-learning", "schema-training", "memory-management"],
-  },
-];
+    focus: "All payment systems",
+    agentInstruction: "Orchestrate the specialist agents and provide executive-level synthesis.",
+    ...(includePrompts ? { systemPrompt: MASTER_AGENT_SYSTEM_PROMPT } : {}),
+  };
+
+  const utilityAgents = [
+    {
+      id: "text_to_sql",
+      name: "Text-to-SQL Agent",
+      role: "SQL Generator",
+      description: "Translates natural language questions into safe PostgreSQL SELECT queries against the Sentinel database.",
+      icon: "🗄️",
+      model: "gpt-4o-mini",
+      capabilities: ["sql-generation", "schema-aware"],
+      focus: "Database querying",
+      agentInstruction: "Generate safe, read-only PostgreSQL SELECT queries from natural language.",
+      ...(includePrompts ? { systemPrompt: "Generates safe SQL SELECT queries from natural language input against the Sentinel PostgreSQL schema." } : {}),
+    },
+    {
+      id: "graph_agent",
+      name: "Graph & Chart Agent",
+      role: "Visualisation",
+      description: "Transforms SQL query results into publication-quality chart specifications for the analytics dashboard.",
+      icon: "📈",
+      model: "gpt-4o-mini",
+      capabilities: ["chart-generation", "data-visualisation"],
+      focus: "Chart and graph generation",
+      agentInstruction: "Transform query results into Recharts-compatible chart specifications.",
+      ...(includePrompts ? { systemPrompt: "Transforms structured data results into publication-quality Recharts-compatible chart specifications." } : {}),
+    },
+    {
+      id: "training_agent",
+      name: "Training Agent",
+      role: "Knowledge Custodian",
+      description: "Builds and validates the institutional knowledge base used by all other agents. Learns duplicate rules and database schema from analysts.",
+      icon: "🎓",
+      model: "gpt-4o-mini",
+      capabilities: ["rule-learning", "schema-training", "memory-management"],
+      focus: "Knowledge base management",
+      agentInstruction: "Learn and store institutional duplicate detection rules taught by analysts.",
+      ...(includePrompts ? { systemPrompt: "Maintains the institutional knowledge base — stores and validates duplicate detection rules taught by payment analysts." } : {}),
+    },
+  ];
+
+  return [masterAgent, ...detectorAgents, ...utilityAgents];
+}
 
 router.get("/", (_req, res) => {
-  res.json({ agents: AGENTS_METADATA });
+  res.json({ agents: buildAgentList(false) });
 });
 
-// Alias: frontend uses /agents/list
+// Alias: frontend uses /agents/list (includes systemPrompt for display)
 router.get("/list", (_req, res) => {
-  res.json({ agents: AGENTS_METADATA });
+  res.json({ agents: buildAgentList(true) });
 });
 
 // Master agent conversation

@@ -16,6 +16,7 @@ import {
   BookOpen,
   GitBranch,
   Layers,
+  ScrollText,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -34,6 +35,7 @@ const NAV_ITEMS = [
 const NAV_DOCS = [
   { href: "/guide", label: "How to Use", icon: BookOpen },
   { href: "/agents", label: "Agentic Flow", icon: GitBranch },
+  { href: "/agent-prompts", label: "Agent Prompts", icon: ScrollText },
   { href: "/architecture", label: "Architecture", icon: Layers },
 ];
 

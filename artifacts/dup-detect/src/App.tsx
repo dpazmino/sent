@@ -21,6 +21,7 @@ import GraphChat from "@/pages/GraphChat";
 import HowToUse from "@/pages/HowToUse";
 import AgentFlow from "@/pages/AgentFlow";
 import Architecture from "@/pages/Architecture";
+import AgentPrompts from "@/pages/AgentPrompts";
 import NotFound from "@/pages/not-found";
 import LoginPage from "@/pages/LoginPage";
 
@@ -55,6 +56,7 @@ function Router() {
           <Route path="/guide" component={HowToUse} />
           <Route path="/agents" component={AgentFlow} />
           <Route path="/architecture" component={Architecture} />
+          <Route path="/agent-prompts" component={AgentPrompts} />
           <Route component={NotFound} />
         </Switch>
       </AppLayout>
