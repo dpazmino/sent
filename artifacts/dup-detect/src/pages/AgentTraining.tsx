@@ -48,7 +48,7 @@ const AGENT_ICONS: Record<string, React.ComponentType<{ className?: string }>> =
 const CATEGORY_ORDER = ["orchestrator", "memory", "utility", "detector"];
 
 async function fetchAgents(): Promise<AgentDef[]> {
-  const res = await fetch("/api/agents/list");
+  const res = await fetch("/api/agents/list", { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to load agents");
   const data = await res.json();
   return data.agents;
@@ -58,6 +58,8 @@ export default function AgentTraining() {
   const { data: agents = [], isLoading } = useQuery<AgentDef[]>({
     queryKey: ["agents-list"],
     queryFn: fetchAgents,
+    staleTime: 0,
+    gcTime: 0,
   });
 
   const createSession = useCreateTrainingSession();
