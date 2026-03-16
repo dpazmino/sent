@@ -20,6 +20,7 @@ const pyPaths = [
   "schema",
   "exports",
   "payments",
+  "user-reviews",
 ];
 
 for (const segment of pyPaths) {

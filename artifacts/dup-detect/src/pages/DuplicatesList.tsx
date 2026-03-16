@@ -1,25 +1,22 @@
-import { useState, Fragment, useRef, useEffect } from "react";
-import {
-  useGetDuplicatePayments,
-  useExportDuplicates,
-  useChatWithAgent,
-} from "@workspace/api-client-react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useUser } from "@/contexts/UserContext";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { ProbabilityBadge } from "@/components/ui/ProbabilityBadge";
 import { formatCurrency } from "@/lib/utils";
 import {
-  Download, Search, SlidersHorizontal, Eye,
-  ChevronDown, ChevronUp, ArrowRight, CheckCircle2,
-  Bot, Send, X, MessageSquare, User, Brain,
-  Shield, GitBranch, Network, Blend, Activity,
-  ThumbsUp, ThumbsDown, BookOpen, Loader2, Sparkles,
+  Download, Search, Eye, Bot, Send, X, User,
+  Brain, Shield, GitBranch, Network, Blend, Activity,
+  Loader2, Sparkles, CheckCircle2, XCircle, Clock,
+  AlertTriangle, LogOut, RefreshCw, ChevronRight,
+  MessageSquare, BarChart3,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-type DuplicateItem = {
+type Payment = {
   id: string;
   payment1Id: string;
   payment2Id: string;
@@ -30,19 +27,24 @@ type DuplicateItem = {
   amount: number;
   currency: string;
   probability: number;
-  status: string;
   senderBIC?: string;
   receiverBIC?: string;
   originatorCountry?: string;
   beneficiaryCountry?: string;
   matchedFields?: string[];
+  status: string;
   notes?: string;
 };
 
-type ChatMessage = {
-  role: "user" | "assistant";
-  content: string;
-  memorySaved?: boolean;
+type UserReview = {
+  id: string;
+  userId: string;
+  duplicatePaymentId: string;
+  status: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+  payment: Payment;
 };
 
 type DetectorOpinion = {
@@ -53,819 +55,758 @@ type DetectorOpinion = {
   duplicateType?: string;
 };
 
-// ─── Constants ───────────────────────────────────────────────────────────────
-
-const STATUS_STYLES: Record<string, string> = {
-  pending:              "bg-yellow-400/15 text-yellow-300 border-yellow-400/30 hover:bg-yellow-400/25",
-  under_review:         "bg-blue-400/15 text-blue-300 border-blue-400/30 hover:bg-blue-400/25",
-  confirmed_duplicate:  "bg-red-400/15 text-red-300 border-red-400/30 hover:bg-red-400/25",
-  dismissed:            "bg-green-400/15 text-green-300 border-green-400/30 hover:bg-green-400/25",
+type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+  statusUpdate?: string | null;
 };
 
-const DETECTOR_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  SWIFT_Specialist:          Shield,
-  ACH_Specialist:            GitBranch,
-  MultiSource_Detector:      Network,
-  FuzzyMatch_Engine:         Blend,
-  PatternAnalysis_Agent:     Activity,
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const STATUS_STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  pending:              { bg: "bg-yellow-400/15 border-yellow-400/30",  text: "text-yellow-300",  label: "Pending" },
+  under_review:         { bg: "bg-blue-400/15 border-blue-400/30",      text: "text-blue-300",    label: "Under Review" },
+  confirmed_duplicate:  { bg: "bg-red-400/15 border-red-400/30",        text: "text-red-300",     label: "Confirmed" },
+  dismissed:            { bg: "bg-green-400/15 border-green-400/30",    text: "text-green-300",   label: "Dismissed" },
 };
 
-const SUGGESTIONS = [
-  "Which duplicate type is most common?",
-  "What's the highest risk payment pair?",
-  "Summarise the ACH duplicates",
-  "Which BICs appear most often?",
+const DETECTOR_META: Record<string, { icon: React.ComponentType<{ className?: string }>; color: string }> = {
+  SWIFT_Specialist:      { icon: Shield,   color: "text-blue-400" },
+  ACH_Specialist:        { icon: GitBranch, color: "text-purple-400" },
+  MultiSource_Detector:  { icon: Network,  color: "text-cyan-400" },
+  FuzzyMatch_Engine:     { icon: Blend,    color: "text-orange-400" },
+  PatternAnalysis_Agent: { icon: Activity, color: "text-pink-400" },
+};
+
+const STATUS_TAB_FILTERS = [
+  { key: "", label: "All" },
+  { key: "pending", label: "Pending" },
+  { key: "under_review", label: "Under Review" },
+  { key: "confirmed_duplicate", label: "Confirmed" },
+  { key: "dismissed", label: "Dismissed" },
 ];
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── API helpers ──────────────────────────────────────────────────────────────
 
-function renderContent(text: string) {
-  const parts = text.split(/(```[\s\S]*?```)/g);
-  return parts.map((part, i) => {
-    if (part.startsWith("```")) {
-      const code = part.replace(/^```[^\n]*\n?/, "").replace(/```$/, "");
-      return (
-        <pre key={i} className="bg-background/60 border border-border/50 rounded-lg p-3 text-xs font-mono overflow-x-auto my-2 text-foreground">
-          {code}
-        </pre>
-      );
-    }
-    return (
-      <span key={i} className="whitespace-pre-wrap">
-        {part.split(/(\*\*[^*]+\*\*)/g).map((chunk, j) =>
-          chunk.startsWith("**") && chunk.endsWith("**")
-            ? <strong key={j} className="font-semibold text-foreground">{chunk.slice(2, -2)}</strong>
-            : chunk
-        )}
-      </span>
-    );
-  });
+async function apiFetch<T>(url: string, opts?: RequestInit): Promise<T> {
+  const res = await fetch(url, opts);
+  if (!res.ok) {
+    const err = await res.text().catch(() => res.statusText);
+    throw new Error(err || `HTTP ${res.status}`);
+  }
+  return res.json() as Promise<T>;
 }
 
-function formatDate(d: string) {
-  try { return new Date(d).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }); }
-  catch { return d || "—"; }
-}
+// ─── Status Badge ─────────────────────────────────────────────────────────────
 
-// ─── FieldRow (compare panel) ─────────────────────────────────────────────────
-
-function FieldRow({ label, val1, val2, matched }: { label: string; val1: string; val2: string; matched: boolean }) {
+function StatusBadge({ status }: { status: string }) {
+  const s = STATUS_STYLES[status] ?? STATUS_STYLES.pending;
   return (
-    <div className={`grid grid-cols-[120px_1fr_1fr] gap-2 px-3 py-2 rounded-lg text-sm ${matched ? "bg-primary/10 border border-primary/20" : "bg-secondary/10"}`}>
-      <div className="flex items-center gap-1 text-muted-foreground font-medium text-xs">
-        {matched && <CheckCircle2 className="w-3 h-3 text-primary flex-shrink-0" />}
-        <span className={matched ? "text-primary" : ""}>{label}</span>
+    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium border ${s.bg} ${s.text}`}>
+      {s.label}
+    </span>
+  );
+}
+
+// ─── Detector Opinion Card ────────────────────────────────────────────────────
+
+function OpinionCard({ op }: { op: DetectorOpinion }) {
+  const meta = DETECTOR_META[op.agentName] ?? { icon: Brain, color: "text-slate-400" };
+  const Icon = meta.icon;
+  const pct = Math.round(op.confidence * 100);
+
+  return (
+    <div className="bg-white/4 border border-white/8 rounded-lg p-3 space-y-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Icon className={`w-4 h-4 ${meta.color} flex-shrink-0`} />
+          <span className="text-xs font-semibold text-white">
+            {op.agentName.replace(/_/g, " ")}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          <span className={`text-[11px] font-bold ${op.isDuplicate ? "text-red-400" : "text-green-400"}`}>
+            {op.isDuplicate ? "DUPLICATE" : "NOT DUP"}
+          </span>
+          <span className="text-[11px] text-slate-400">{pct}%</span>
+        </div>
       </div>
-      <div className={`font-mono text-xs break-all ${matched ? "text-primary font-semibold" : "text-foreground"}`}>{val1 || "—"}</div>
-      <div className={`font-mono text-xs break-all ${matched ? "text-primary font-semibold" : "text-foreground"}`}>{val2 || "—"}</div>
+      {/* Confidence bar */}
+      <div className="h-1 rounded-full bg-white/8 overflow-hidden">
+        <div
+          className={`h-full rounded-full ${op.isDuplicate ? "bg-red-400" : "bg-green-400"}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <p className="text-[11px] text-slate-400 leading-relaxed">{op.reasoning}</p>
     </div>
   );
 }
 
-// ─── ReviewModal ──────────────────────────────────────────────────────────────
+// ─── Payment Detail Row ───────────────────────────────────────────────────────
 
-function ReviewModal({ item, onClose }: { item: DuplicateItem; onClose: () => void }) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [opinions, setOpinions] = useState<DetectorOpinion[]>([]);
-  const [convId, setConvId] = useState<string | undefined>(undefined);
-  const [input, setInput] = useState("");
-  const [mobileTab, setMobileTab] = useState<"details" | "chat">("chat");
-  const [loading, setLoading] = useState(false);
-  const [initialising, setInitialising] = useState(true);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const matched = new Set((item.matchedFields ?? []).map(f => f.toLowerCase()));
-
-  // Auto-load analysis on open
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setInitialising(true);
-      try {
-        const res = await fetch("/api/agents/payment-review", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ duplicateId: item.id }),
-        });
-        const data = await res.json();
-        if (cancelled) return;
-        setConvId(data.conversationId);
-        setOpinions(data.detectorOpinions ?? []);
-        setMessages([{ role: "assistant", content: data.response }]);
-      } catch {
-        if (!cancelled) setMessages([{ role: "assistant", content: "Error loading analysis. Please try again." }]);
-      } finally {
-        if (!cancelled) setInitialising(false);
-      }
-    }
-    load();
-    return () => { cancelled = true; };
-  }, [item.id]);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
-
-  const send = async (text?: string) => {
-    const msg = (text ?? input).trim();
-    if (!msg || loading) return;
-    setInput("");
-    setMessages(prev => [...prev, { role: "user", content: msg }]);
-    setLoading(true);
-    try {
-      const res = await fetch("/api/agents/payment-review", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ duplicateId: item.id, message: msg, conversationId: convId }),
-      });
-      const data = await res.json();
-      setConvId(data.conversationId);
-      setMessages(prev => [...prev, {
-        role: "assistant",
-        content: data.response,
-        memorySaved: data.memorySaved,
-      }]);
-    } catch {
-      setMessages(prev => [...prev, { role: "assistant", content: "Error communicating with agent. Please try again." }]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleKey = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-  };
-
+function DetailRow({ label, value }: { label: string; value?: string | number | null }) {
+  if (!value && value !== 0) return null;
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <motion.div
-        initial={{ scale: 0.95, y: 16, opacity: 0 }}
-        animate={{ scale: 1, y: 0, opacity: 1 }}
-        exit={{ scale: 0.95, y: 16, opacity: 0 }}
-        transition={{ type: "spring", damping: 28, stiffness: 300 }}
-        className="bg-card border border-border/60 rounded-2xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col overflow-hidden"
-        onClick={e => e.stopPropagation()}
-      >
-        {/* ── Modal Header ── */}
-        <div className="flex items-center gap-4 px-6 py-4 border-b border-border/50 bg-secondary/20 flex-shrink-0">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-3 flex-wrap">
-              <h2 className="text-lg font-display font-bold text-foreground">
-                Payment Review
-              </h2>
-              <span className="font-mono text-sm text-muted-foreground">
-                {item.payment1Id} ↔ {item.payment2Id}
-              </span>
-              <span className="px-2 py-0.5 rounded text-xs font-medium bg-secondary text-muted-foreground border border-border/50">
-                {item.paymentSystem}
-              </span>
-              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border ${STATUS_STYLES[item.status] ?? "bg-secondary text-muted-foreground border-border/50"}`}>
-                {item.status.replace(/_/g, " ")}
-              </span>
-            </div>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              {formatCurrency(item.amount, item.currency)} · {item.duplicateType.replace(/_/g, " ")} · {Math.round(item.probability * 100)}% probability
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors flex-shrink-0"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* ── Mobile tab switcher (hidden on lg+) ── */}
-        <div className="flex lg:hidden border-b border-border/50 shrink-0">
-          <button
-            onClick={() => setMobileTab("details")}
-            className={`flex-1 py-2.5 text-xs font-semibold transition-colors ${mobileTab === "details" ? "text-primary border-b-2 border-primary" : "text-muted-foreground"}`}
-          >
-            Payment Details
-          </button>
-          <button
-            onClick={() => setMobileTab("chat")}
-            className={`flex-1 py-2.5 text-xs font-semibold transition-colors ${mobileTab === "chat" ? "text-primary border-b-2 border-primary" : "text-muted-foreground"}`}
-          >
-            AI Review
-          </button>
-        </div>
-
-        {/* ── Body: responsive panels ── */}
-        <div className="flex flex-col lg:flex-row flex-1 min-h-0 lg:divide-x lg:divide-border/50 overflow-hidden">
-
-          {/* ── LEFT: Payment data panel ── */}
-          <div className={`lg:w-[42%] flex flex-col min-h-0 flex-shrink-0 ${mobileTab === "chat" ? "hidden lg:flex" : "flex"}`}>
-            <div className="px-4 py-2.5 bg-secondary/10 border-b border-border/30 flex-shrink-0">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Payment Details</p>
-            </div>
-            <div className="flex-1 overflow-y-auto custom-scrollbar">
-              {/* Column headers */}
-              <div className="grid grid-cols-[120px_1fr_1fr] gap-2 px-3 py-2.5 bg-secondary/20 border-b border-border/30 text-[10px] font-bold uppercase tracking-wider text-muted-foreground sticky top-0">
-                <div>Field</div>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-blue-400 flex-shrink-0" />
-                  <span className="truncate">{item.payment1Id}</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" />
-                  <span className="truncate">{item.payment2Id}</span>
-                </div>
-              </div>
-
-              {/* Field rows */}
-              <div className="p-3 space-y-1.5">
-                <FieldRow label="Date"        val1={formatDate(item.paymentDate1)} val2={formatDate(item.paymentDate2)} matched={matched.has("value_date") || matched.has("payment_date")} />
-                <FieldRow label="Amount"      val1={formatCurrency(item.amount, item.currency)} val2={formatCurrency(item.amount, item.currency)} matched={matched.has("amount")} />
-                <FieldRow label="Currency"    val1={item.currency}                 val2={item.currency}                matched={matched.has("currency")} />
-                <FieldRow label="Sender BIC"  val1={item.senderBIC ?? "—"}         val2={item.senderBIC ?? "—"}        matched={matched.has("sender_bic")} />
-                <FieldRow label="Receiver BIC" val1={item.receiverBIC ?? "—"}      val2={item.receiverBIC ?? "—"}      matched={matched.has("receiver_bic")} />
-                <FieldRow label="Originator"  val1={item.originatorCountry ?? "—"} val2={item.originatorCountry ?? "—"} matched={matched.has("originator_country")} />
-                <FieldRow label="Beneficiary" val1={item.beneficiaryCountry ?? "—"} val2={item.beneficiaryCountry ?? "—"} matched={matched.has("beneficiary_country")} />
-                <FieldRow label="System"      val1={item.paymentSystem}            val2={item.paymentSystem}           matched={false} />
-                <FieldRow label="Type"        val1={item.duplicateType.replace(/_/g, " ")} val2={item.duplicateType.replace(/_/g, " ")} matched={false} />
-              </div>
-
-              {/* Matched fields */}
-              {(item.matchedFields ?? []).length > 0 && (
-                <div className="mx-3 mb-3 p-3 rounded-xl border border-primary/20 bg-primary/5">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-primary mb-2">Matched Fields</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {(item.matchedFields ?? []).map(f => (
-                      <span key={f} className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-primary/15 text-primary border border-primary/25 uppercase tracking-wide">
-                        {f.replace(/_/g, " ")}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Detector opinions */}
-              {opinions.length > 0 && (
-                <div className="mx-3 mb-3">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Detector Agent Verdicts</p>
-                  <div className="space-y-1.5">
-                    {opinions.map((op, idx) => {
-                      const Icon = DETECTOR_ICONS[op.agentName] ?? Brain;
-                      return (
-                        <div key={`${op.agentName}-${op.paymentId ?? idx}`} className={`flex items-start gap-2 p-2 rounded-lg border text-xs ${op.isDuplicate ? "bg-red-400/8 border-red-400/20" : "bg-green-400/8 border-green-400/20"}`}>
-                          <Icon className={`w-3.5 h-3.5 mt-0.5 flex-shrink-0 ${op.isDuplicate ? "text-red-400" : "text-green-400"}`} />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5 mb-0.5">
-                              <span className="font-semibold text-foreground">{op.agentName.replace(/_/g, " ")}</span>
-                              <span className={`text-[10px] font-bold ${op.isDuplicate ? "text-red-400" : "text-green-400"}`}>
-                                {Math.round(op.confidence * 100)}%
-                              </span>
-                            </div>
-                            <p className="text-muted-foreground leading-snug line-clamp-2">{op.reasoning}</p>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* ── RIGHT: Training Agent chat ── */}
-          <div className={`flex-1 flex flex-col min-h-0 ${mobileTab === "details" ? "hidden lg:flex" : "flex"}`}>
-            {/* Chat header */}
-            <div className="flex items-center gap-3 px-4 py-2.5 bg-secondary/10 border-b border-border/30 flex-shrink-0">
-              <div className="w-7 h-7 rounded-full bg-green-400/20 border border-green-400/30 flex items-center justify-center">
-                <Brain className="w-3.5 h-3.5 text-green-400" />
-              </div>
-              <div>
-                <p className="text-xs font-semibold text-foreground">Training Agent</p>
-                <p className="text-[10px] text-green-400 flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />
-                  Consulting 5 detector agents · Memory enabled
-                </p>
-              </div>
-              <div className="ml-auto flex items-center gap-1.5">
-                <BookOpen className="w-3.5 h-3.5 text-muted-foreground" />
-                <span className="text-[10px] text-muted-foreground">Feedback is saved to agent memory</span>
-              </div>
-            </div>
-
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
-              {initialising ? (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-center">
-                    <div className="flex justify-center mb-3">
-                      <div className="w-8 h-8 rounded-full bg-green-400/20 border border-green-400/30 flex items-center justify-center">
-                        <Loader2 className="w-4 h-4 text-green-400 animate-spin" />
-                      </div>
-                    </div>
-                    <p className="text-sm text-muted-foreground">Consulting 5 detector agents…</p>
-                    <p className="text-xs text-muted-foreground/60 mt-1">SWIFT Specialist · ACH Specialist · FuzzyMatch · MultiSource · PatternAnalysis</p>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  {messages.map((msg, i) => (
-                    <div key={i} className={`flex gap-2.5 ${msg.role === "user" ? "flex-row-reverse" : ""}`}>
-                      <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 border ${
-                        msg.role === "assistant"
-                          ? "bg-green-400/20 border-green-400/30"
-                          : "bg-secondary border-border"
-                      }`}>
-                        {msg.role === "assistant"
-                          ? <Brain className="w-3.5 h-3.5 text-green-400" />
-                          : <User className="w-3.5 h-3.5 text-muted-foreground" />
-                        }
-                      </div>
-                      <div className={`max-w-[84%] flex flex-col gap-1 ${msg.role === "user" ? "items-end" : "items-start"}`}>
-                        <div className={`rounded-xl px-3.5 py-2.5 text-sm leading-relaxed ${
-                          msg.role === "user"
-                            ? "bg-primary text-primary-foreground rounded-tr-sm"
-                            : "bg-secondary/50 border border-border/50 text-foreground rounded-tl-sm"
-                        }`}>
-                          {msg.role === "assistant" ? renderContent(msg.content) : msg.content}
-                        </div>
-                        {msg.memorySaved && (
-                          <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-400/10 border border-green-400/20">
-                            <BookOpen className="w-3 h-3 text-green-400" />
-                            <span className="text-[10px] text-green-400 font-medium">Saved to agent memory</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-
-                  {loading && (
-                    <div className="flex gap-2.5">
-                      <div className="w-6 h-6 rounded-full bg-green-400/20 border border-green-400/30 flex items-center justify-center flex-shrink-0 mt-0.5">
-                        <Brain className="w-3.5 h-3.5 text-green-400" />
-                      </div>
-                      <div className="bg-secondary/50 border border-border/50 rounded-xl rounded-tl-sm px-4 py-3">
-                        <div className="flex gap-1 items-center">
-                          <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-bounce" style={{ animationDelay: "0ms" }} />
-                          <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-bounce" style={{ animationDelay: "150ms" }} />
-                          <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-bounce" style={{ animationDelay: "300ms" }} />
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  <div ref={bottomRef} />
-                </>
-              )}
-            </div>
-
-            {/* Quick response buttons */}
-            {!initialising && messages.length === 1 && !loading && (
-              <div className="px-4 pb-2 flex flex-wrap gap-2">
-                {[
-                  { icon: ThumbsUp, label: "I agree — this is a duplicate", color: "border-red-400/30 bg-red-400/10 text-red-300 hover:bg-red-400/20" },
-                  { icon: ThumbsDown, label: "I disagree — explain why", color: "border-green-400/30 bg-green-400/10 text-green-300 hover:bg-green-400/20" },
-                  { icon: Sparkles, label: "What's the strongest evidence?", color: "border-primary/30 bg-primary/10 text-primary hover:bg-primary/20" },
-                  { icon: Brain, label: "Which agent is most confident?", color: "border-purple-400/30 bg-purple-400/10 text-purple-300 hover:bg-purple-400/20" },
-                ].map(({ icon: Icon, label, color }) => (
-                  <button
-                    key={label}
-                    onClick={() => send(label)}
-                    className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border transition-colors ${color}`}
-                  >
-                    <Icon className="w-3 h-3" />
-                    {label}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {/* Input */}
-            {!initialising && (
-              <div className="px-4 pb-4 pt-2 border-t border-border/50 flex-shrink-0">
-                <div className="flex gap-2 items-end bg-secondary/30 border border-border rounded-xl px-3 py-2 focus-within:border-green-400/50 focus-within:ring-1 focus-within:ring-green-400/20 transition-all">
-                  <textarea
-                    value={input}
-                    onChange={e => setInput(e.target.value)}
-                    onKeyDown={handleKey}
-                    placeholder="Agree, disagree, or ask for more detail — your feedback is saved…"
-                    rows={1}
-                    className="flex-1 bg-transparent outline-none text-sm resize-none text-foreground placeholder:text-muted-foreground leading-relaxed max-h-28"
-                  />
-                  <button
-                    onClick={() => send()}
-                    disabled={!input.trim() || loading}
-                    className="w-7 h-7 rounded-lg bg-green-500 flex items-center justify-center text-white hover:bg-green-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
-                  >
-                    <Send className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-                <p className="text-[10px] text-muted-foreground mt-1.5 text-center">
-                  Feedback containing "agree", "disagree", "because", "rule" etc. is automatically saved to agent memory
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-      </motion.div>
-    </motion.div>
+    <div className="flex justify-between items-start gap-4 py-1.5 border-b border-white/5 last:border-0">
+      <span className="text-[11px] text-slate-500 flex-shrink-0">{label}</span>
+      <span className="text-[11px] text-slate-300 text-right break-all">{String(value)}</span>
+    </div>
   );
 }
 
-// ─── Agent Chat Panel (existing slide-in) ────────────────────────────────────
+// ─── Review Modal ─────────────────────────────────────────────────────────────
 
-function AgentChatPanel({ onClose, pageContext }: { onClose: () => void; pageContext: string }) {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: "assistant", content: "Hello! I'm the **Master Detection Agent**. I have full context of the duplicate payments currently loaded on this page.\n\nAsk me anything — which pairs have the highest risk, what patterns I see, or why a specific payment was flagged." },
-  ]);
-  const [input, setInput] = useState("");
-  const [convId, setConvId] = useState<string | undefined>(undefined);
-  const bottomRef = useRef<HTMLDivElement>(null);
+function ReviewModal({
+  review,
+  userId,
+  onClose,
+  onStatusChange,
+}: {
+  review: UserReview;
+  userId: string;
+  onClose: () => void;
+  onStatusChange: (reviewId: string, status: string) => void;
+}) {
+  const [activeTab, setActiveTab] = useState<"opinions" | "chat">("opinions");
+  const [chatInput, setChatInput] = useState("");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [currentStatus, setCurrentStatus] = useState(review.status);
+  const [detectorOpinions, setDetectorOpinions] = useState<DetectorOpinion[]>([]);
+  const [opinionsLoading, setOpinionsLoading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const chatMutation = useChatWithAgent({
-    mutation: {
-      onSuccess: (res) => {
-        setConvId(res.conversationId);
-        setMessages(prev => [...prev, { role: "assistant", content: res.response }]);
-      },
-      onError: () => {
-        setMessages(prev => [...prev, { role: "assistant", content: "Sorry, I encountered an error. Please try again." }]);
-      },
-    },
-  });
-
+  // Load existing chat messages
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, chatMutation.isPending]);
+    (async () => {
+      try {
+        const data = await apiFetch<{ messages: ChatMessage[]; currentStatus: string }>(
+          `/api/user-reviews/${userId}/${review.id}/messages`
+        );
+        setMessages(data.messages);
+        setCurrentStatus(data.currentStatus);
+      } catch { /* no messages yet */ }
+    })();
+  }, [review.id, userId]);
 
-  const send = (text?: string) => {
-    const msg = (text ?? input).trim();
-    if (!msg || chatMutation.isPending) return;
-    setInput("");
-    setMessages(prev => [...prev, { role: "user", content: msg }]);
-    chatMutation.mutate({
-      data: { message: `[PAGE CONTEXT]\n${pageContext}\n\n[USER QUESTION]\n${msg}`, agentType: "master", conversationId: convId },
-    });
+  // Load detector opinions
+  useEffect(() => {
+    setOpinionsLoading(true);
+    (async () => {
+      try {
+        const data = await apiFetch<{ opinions: DetectorOpinion[] }>(
+          `/api/user-reviews/${userId}/${review.id}/opinions`
+        );
+        setDetectorOpinions(data.opinions);
+      } catch { /* failed silently */ } finally {
+        setOpinionsLoading(false);
+      }
+    })();
+  }, [review.id, userId]);
+
+  // Auto-scroll chat
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const sendMessage = async (text?: string) => {
+    const content = (text ?? chatInput).trim();
+    if (!content) return;
+    setChatInput("");
+
+    const userMsg: ChatMessage = { role: "user", content };
+    setMessages(prev => [...prev, userMsg]);
+
+    try {
+      const data = await apiFetch<{ response: string; statusUpdate?: string | null; currentStatus: string }>(
+        `/api/user-reviews/${userId}/${review.id}/chat`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: content,
+            detectorOpinions,
+          }),
+        }
+      );
+      const assistantMsg: ChatMessage = {
+        role: "assistant",
+        content: data.response,
+        statusUpdate: data.statusUpdate,
+      };
+      setMessages(prev => [...prev, assistantMsg]);
+      if (data.currentStatus) {
+        setCurrentStatus(data.currentStatus);
+        onStatusChange(review.id, data.currentStatus);
+      }
+    } catch (e) {
+      setMessages(prev => [
+        ...prev,
+        { role: "assistant", content: "Sorry, I couldn't process that request. Please try again." },
+      ]);
+    }
   };
 
-  const handleKey = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  const updateStatus = async (newStatus: string) => {
+    try {
+      await apiFetch(`/api/user-reviews/${userId}/${review.id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      setCurrentStatus(newStatus);
+      onStatusChange(review.id, newStatus);
+    } catch { /* ignore */ }
   };
+
+  const p = review.payment;
 
   return (
-    <motion.div
-      initial={{ x: "100%", opacity: 0 }}
-      animate={{ x: 0, opacity: 1 }}
-      exit={{ x: "100%", opacity: 0 }}
-      transition={{ type: "spring", damping: 28, stiffness: 260 }}
-      className="fixed top-0 right-0 h-full w-[420px] z-50 flex flex-col bg-card border-l border-border shadow-2xl"
-    >
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-border/50 bg-secondary/20 flex-shrink-0">
-        <div className="w-8 h-8 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center">
-          <Bot className="w-4 h-4 text-primary" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold text-foreground">Master Detection Agent</div>
-          <div className="text-[11px] text-primary flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />
-            Online · Duplicate Findings context loaded
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.97, y: 8 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.97 }}
+        transition={{ duration: 0.18 }}
+        className="bg-[#0e1420] border border-white/10 rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/8">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-violet-500/20 flex items-center justify-center flex-shrink-0">
+              <Eye className="w-4 h-4 text-violet-400" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-white truncate">
+                {p.payment1Id} ↔ {p.payment2Id}
+              </p>
+              <p className="text-[11px] text-slate-500">{p.paymentSystem} · {p.duplicateType.replace(/_/g, " ")}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <ProbabilityBadge probability={p.probability} />
+            <StatusBadge status={currentStatus} />
+            <button onClick={onClose} className="ml-2 p-1.5 rounded-lg hover:bg-white/8 text-slate-400 hover:text-white transition-colors">
+              <X className="w-4 h-4" />
+            </button>
           </div>
         </div>
-        <button onClick={onClose} className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
-          <X className="w-4 h-4" />
-        </button>
-      </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map((msg, i) => (
-          <div key={i} className={`flex gap-2.5 ${msg.role === "user" ? "flex-row-reverse" : ""}`}>
-            <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${msg.role === "assistant" ? "bg-primary/20 border border-primary/30" : "bg-secondary border border-border"}`}>
-              {msg.role === "assistant" ? <Bot className="w-3.5 h-3.5 text-primary" /> : <User className="w-3.5 h-3.5 text-muted-foreground" />}
-            </div>
-            <div className={`max-w-[82%] rounded-xl px-3.5 py-2.5 text-sm leading-relaxed ${msg.role === "user" ? "bg-primary text-primary-foreground rounded-tr-sm" : "bg-secondary/50 border border-border/50 text-foreground rounded-tl-sm"}`}>
-              {msg.role === "assistant" ? renderContent(msg.content) : msg.content}
-            </div>
-          </div>
-        ))}
-        {chatMutation.isPending && (
-          <div className="flex gap-2.5">
-            <div className="w-6 h-6 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center flex-shrink-0 mt-0.5">
-              <Bot className="w-3.5 h-3.5 text-primary" />
-            </div>
-            <div className="bg-secondary/50 border border-border/50 rounded-xl rounded-tl-sm px-4 py-3">
-              <div className="flex gap-1 items-center">
-                {[0, 150, 300].map(d => <span key={d} className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce" style={{ animationDelay: `${d}ms` }} />)}
-              </div>
-            </div>
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
-
-      {messages.length === 1 && (
-        <div className="px-4 pb-3 flex flex-wrap gap-2">
-          {SUGGESTIONS.map(s => (
-            <button key={s} onClick={() => send(s)} className="text-xs px-3 py-1.5 rounded-full border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
-              {s}
+        {/* Status Actions */}
+        <div className="flex items-center gap-2 px-5 py-3 border-b border-white/5 bg-white/2">
+          <span className="text-[11px] text-slate-500 mr-1">Update status:</span>
+          {[
+            { key: "confirmed_duplicate", label: "Confirm Duplicate", icon: CheckCircle2, cls: "text-red-400 border-red-400/30 hover:bg-red-400/10" },
+            { key: "dismissed",          label: "Dismiss",           icon: XCircle,      cls: "text-green-400 border-green-400/30 hover:bg-green-400/10" },
+            { key: "under_review",       label: "Under Review",      icon: AlertTriangle, cls: "text-blue-400 border-blue-400/30 hover:bg-blue-400/10" },
+            { key: "pending",            label: "Reset Pending",     icon: Clock,        cls: "text-yellow-400 border-yellow-400/30 hover:bg-yellow-400/10" },
+          ].map(({ key, label, icon: Icon, cls }) => (
+            <button
+              key={key}
+              disabled={currentStatus === key}
+              onClick={() => updateStatus(key)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-all disabled:opacity-40 disabled:cursor-default ${cls} bg-transparent`}
+            >
+              <Icon className="w-3 h-3" />
+              {label}
             </button>
           ))}
         </div>
-      )}
 
-      <div className="px-4 pb-4 pt-2 border-t border-border/50 flex-shrink-0">
-        <div className="flex gap-2 items-end bg-secondary/30 border border-border rounded-xl px-3 py-2 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20 transition-all">
-          <textarea
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={handleKey}
-            placeholder="Ask about these duplicate payments…"
-            rows={1}
-            className="flex-1 bg-transparent outline-none text-sm resize-none text-foreground placeholder:text-muted-foreground leading-relaxed max-h-32"
-          />
-          <button
-            onClick={() => send()}
-            disabled={!input.trim() || chatMutation.isPending}
-            className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
-          >
-            <Send className="w-3.5 h-3.5" />
-          </button>
-        </div>
-        <p className="text-[10px] text-muted-foreground mt-1.5 text-center">
-          Agent has access to all <span className="text-foreground font-medium">500</span> duplicate records
-        </p>
-      </div>
-    </motion.div>
-  );
-}
-
-// ─── Inline compare panel (existing expand row) ───────────────────────────────
-
-function DetailPanel({ item }: { item: DuplicateItem }) {
-  const matched = new Set((item.matchedFields ?? []).map(f => f.toLowerCase()));
-  return (
-    <motion.div
-      initial={{ opacity: 0, height: 0 }}
-      animate={{ opacity: 1, height: "auto" }}
-      exit={{ opacity: 0, height: 0 }}
-      transition={{ duration: 0.2 }}
-      className="overflow-hidden"
-    >
-      <div className="px-6 pb-6 pt-2">
-        <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
-          <div className="grid grid-cols-[140px_1fr_1fr] gap-3 px-4 py-3 bg-secondary/30 border-b border-border/50 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-            <div>Field</div>
-            <div className="flex items-center gap-2">
-              <span className="inline-block w-2 h-2 rounded-full bg-blue-400" />{item.payment1Id}
-              <span className="text-[10px] normal-case text-muted-foreground font-normal">(original)</span>
+        {/* Body */}
+        <div className="flex flex-1 min-h-0">
+          {/* Left: Payment Details */}
+          <div className="w-64 flex-shrink-0 border-r border-white/8 overflow-y-auto p-4">
+            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-3">Payment Details</p>
+            <div className="space-y-0">
+              <DetailRow label="Amount" value={formatCurrency(p.amount, p.currency)} />
+              <DetailRow label="System" value={p.paymentSystem} />
+              <DetailRow label="Type" value={p.duplicateType?.replace(/_/g, " ")} />
+              <DetailRow label="Sender BIC" value={p.senderBIC} />
+              <DetailRow label="Receiver BIC" value={p.receiverBIC} />
+              <DetailRow label="Date 1" value={p.paymentDate1 ? new Date(p.paymentDate1).toLocaleDateString() : undefined} />
+              <DetailRow label="Date 2" value={p.paymentDate2 ? new Date(p.paymentDate2).toLocaleDateString() : undefined} />
+              <DetailRow label="Originator" value={p.originatorCountry} />
+              <DetailRow label="Beneficiary" value={p.beneficiaryCountry} />
             </div>
-            <div className="flex items-center gap-2">
-              <span className="inline-block w-2 h-2 rounded-full bg-orange-400" />{item.payment2Id}
-              <span className="text-[10px] normal-case text-muted-foreground font-normal">(suspected dup)</span>
+            {p.matchedFields && p.matchedFields.length > 0 && (
+              <div className="mt-3">
+                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Matched Fields</p>
+                <div className="flex flex-wrap gap-1">
+                  {p.matchedFields.map(f => (
+                    <span key={f} className="text-[10px] bg-violet-500/15 text-violet-300 border border-violet-400/20 px-1.5 py-0.5 rounded">
+                      {f}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Right: Tabs */}
+          <div className="flex-1 flex flex-col min-w-0 min-h-0">
+            {/* Tabs */}
+            <div className="flex border-b border-white/8 px-4 pt-3 gap-1">
+              {[
+                { key: "opinions", label: "Detector Opinions", icon: BarChart3 },
+                { key: "chat",     label: "Review Chat",       icon: MessageSquare },
+              ].map(({ key, label, icon: Icon }) => (
+                <button
+                  key={key}
+                  onClick={() => setActiveTab(key as "opinions" | "chat")}
+                  className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-t-lg transition-colors border-b-2 -mb-px ${
+                    activeTab === key
+                      ? "text-white border-violet-500 bg-white/4"
+                      : "text-slate-500 border-transparent hover:text-slate-300"
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* Tab Content */}
+            <div className="flex-1 min-h-0 overflow-hidden">
+              {activeTab === "opinions" && (
+                <div className="h-full overflow-y-auto p-4 space-y-3">
+                  {opinionsLoading ? (
+                    <div className="flex flex-col items-center justify-center h-40 gap-2 text-slate-500">
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      <p className="text-xs">Consulting 5 detector agents…</p>
+                    </div>
+                  ) : detectorOpinions.length > 0 ? (
+                    <>
+                      {/* Consensus header */}
+                      {(() => {
+                        const dups = detectorOpinions.filter(o => o.isDuplicate).length;
+                        return (
+                          <div className="flex items-center justify-between bg-white/4 border border-white/8 rounded-lg px-3 py-2 mb-1">
+                            <span className="text-xs text-slate-400">Agent Consensus</span>
+                            <span className={`text-xs font-semibold ${dups >= 3 ? "text-red-400" : "text-green-400"}`}>
+                              {dups}/5 agents say duplicate
+                            </span>
+                          </div>
+                        );
+                      })()}
+                      {detectorOpinions.map((op, i) => (
+                        <OpinionCard key={i} op={op} />
+                      ))}
+                    </>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-40 gap-2 text-slate-500">
+                      <Brain className="w-6 h-6" />
+                      <p className="text-xs">No opinions available</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {activeTab === "chat" && (
+                <div className="flex flex-col h-full">
+                  {/* Messages */}
+                  <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                    {messages.length === 0 && (
+                      <div className="flex flex-col items-center justify-center h-32 gap-3 text-slate-500">
+                        <Bot className="w-7 h-7" />
+                        <p className="text-xs text-center max-w-xs">
+                          Chat with the Review Agent about this payment.<br />
+                          Ask for analysis or tell it to update the status.
+                        </p>
+                        <div className="flex flex-wrap justify-center gap-1.5 mt-1">
+                          {[
+                            "Analyze this payment",
+                            "What fields matched?",
+                            "Is this a standing order?",
+                            "Confirm as duplicate",
+                            "Dismiss this",
+                          ].map(s => (
+                            <button
+                              key={s}
+                              onClick={() => sendMessage(s)}
+                              className="text-[10px] bg-white/5 border border-white/10 text-slate-400 hover:text-white hover:bg-white/10 px-2 py-1 rounded-full transition-colors"
+                            >
+                              {s}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {messages.map((msg, i) => (
+                      <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                        <div className={`flex gap-2 max-w-[85%] ${msg.role === "user" ? "flex-row-reverse" : ""}`}>
+                          <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${
+                            msg.role === "user" ? "bg-violet-600" : "bg-slate-700"
+                          }`}>
+                            {msg.role === "user" ? <User className="w-3 h-3 text-white" /> : <Bot className="w-3 h-3 text-violet-300" />}
+                          </div>
+                          <div>
+                            <div className={`rounded-xl px-3 py-2 text-xs leading-relaxed ${
+                              msg.role === "user"
+                                ? "bg-violet-600/80 text-white"
+                                : "bg-white/8 text-slate-200"
+                            }`}>
+                              {msg.content}
+                            </div>
+                            {msg.statusUpdate && (
+                              <div className="mt-1 text-[10px] text-violet-400 flex items-center gap-1">
+                                <CheckCircle2 className="w-3 h-3" />
+                                Status updated to: {msg.statusUpdate.replace(/_/g, " ")}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    <div ref={chatEndRef} />
+                  </div>
+
+                  {/* Input */}
+                  <div className="p-3 border-t border-white/8">
+                    <div className="flex gap-2">
+                      <input
+                        ref={inputRef}
+                        value={chatInput}
+                        onChange={e => setChatInput(e.target.value)}
+                        onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
+                        placeholder="Ask about this payment or say 'confirm as duplicate'…"
+                        className="flex-1 bg-white/6 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-violet-500/50"
+                      />
+                      <button
+                        onClick={() => sendMessage()}
+                        disabled={!chatInput.trim()}
+                        className="w-8 h-8 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors"
+                      >
+                        <Send className="w-3.5 h-3.5 text-white" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-          <div className="p-3 space-y-1.5">
-            <FieldRow label="Payment Date" val1={formatDate(item.paymentDate1)} val2={formatDate(item.paymentDate2)} matched={matched.has("value_date") || matched.has("payment_date")} />
-            <FieldRow label="Amount"       val1={formatCurrency(item.amount, item.currency)} val2={formatCurrency(item.amount, item.currency)} matched={matched.has("amount")} />
-            <FieldRow label="Currency"     val1={item.currency}       val2={item.currency}       matched={matched.has("currency")} />
-            <FieldRow label="Sender BIC"   val1={item.senderBIC ?? "—"}  val2={item.senderBIC ?? "—"}  matched={matched.has("sender_bic")} />
-            <FieldRow label="Receiver BIC" val1={item.receiverBIC ?? "—"} val2={item.receiverBIC ?? "—"} matched={matched.has("receiver_bic")} />
-            <FieldRow label="Originator"   val1={item.originatorCountry ?? "—"} val2={item.originatorCountry ?? "—"} matched={matched.has("originator_country")} />
-            <FieldRow label="Beneficiary"  val1={item.beneficiaryCountry ?? "—"} val2={item.beneficiaryCountry ?? "—"} matched={matched.has("beneficiary_country")} />
-          </div>
-          <div className="px-4 py-3 border-t border-border/50 bg-secondary/10 flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted-foreground font-medium">Matched on:</span>
-            {(item.matchedFields ?? []).map(f => (
-              <span key={f} className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-primary/15 text-primary border border-primary/25 uppercase tracking-wide">
-                {f.replace(/_/g, " ")}
-              </span>
-            ))}
-            <span className="ml-auto text-xs text-muted-foreground">
-              Type: <span className="text-foreground font-medium capitalize">{item.duplicateType.replace(/_/g, " ")}</span>
-            </span>
-          </div>
         </div>
-      </div>
-    </motion.div>
+      </motion.div>
+    </div>
   );
 }
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function DuplicatesList() {
+  const { user, logout } = useUser();
+  const queryClient = useQueryClient();
+  const [statusFilter, setStatusFilter] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedReview, setSelectedReview] = useState<UserReview | null>(null);
   const [page, setPage] = useState(1);
-  const [systemFilter, setSystemFilter] = useState("");
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [chatOpen, setChatOpen] = useState(false);
-  const [reviewItem, setReviewItem] = useState<DuplicateItem | null>(null);
+  const [fetchSummary, setFetchSummary] = useState<string | null>(null);
 
-  const { data, isLoading } = useGetDuplicatePayments({
-    page,
-    limit: 15,
-    paymentSystem: systemFilter || undefined,
+  // Load user's review queue
+  const { data: reviewData, isLoading, refetch } = useQuery({
+    queryKey: ["user-reviews", user?.id, statusFilter, page],
+    queryFn: () =>
+      apiFetch<{
+        reviews: UserReview[];
+        total: number;
+        totalPages: number;
+        user: { id: string; username: string; displayName: string };
+      }>(`/api/user-reviews/${user!.id}?status=${statusFilter}&page=${page}&page_size=25`),
+    enabled: !!user,
   });
 
-  const exportMutation = useExportDuplicates({
-    mutation: {
-      onSuccess: (res) => { alert(`Exported ${res.recordCount} records. File: ${res.filename}`); },
+  // Fetch duplicates mutation
+  const fetchMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ totalFetched: number; newlyAssigned: number; totalAssigned: number; summary: string }>(
+        "/api/user-reviews/fetch",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: user!.id }),
+        }
+      ),
+    onSuccess: (data) => {
+      setFetchSummary(data.summary);
+      queryClient.invalidateQueries({ queryKey: ["user-reviews", user?.id] });
     },
   });
 
-  const toggleExpand = (id: string) => setExpandedId(prev => prev === id ? null : id);
+  const handleStatusChange = useCallback((reviewId: string, newStatus: string) => {
+    // Optimistically update the local list
+    queryClient.setQueryData(
+      ["user-reviews", user?.id, statusFilter, page],
+      (old: typeof reviewData) => {
+        if (!old) return old;
+        return {
+          ...old,
+          reviews: old.reviews.map(r =>
+            r.id === reviewId ? { ...r, status: newStatus } : r
+          ),
+        };
+      }
+    );
+    // Also update selected review state
+    setSelectedReview(prev =>
+      prev && prev.id === reviewId ? { ...prev, status: newStatus } : prev
+    );
+  }, [queryClient, user?.id, statusFilter, page]);
 
-  const pageContext = data
-    ? [
-        `Total duplicate payments in system: ${data.total}`,
-        `Currently viewing page ${page} of ${data.totalPages} (${data.items.length} records)`,
-        systemFilter ? `Filter active: payment system = ${systemFilter}` : "Filter: All payment systems",
-        "",
-        "Current page records summary:",
-        ...data.items.slice(0, 8).map(it =>
-          `- ${it.payment1Id} ↔ ${it.payment2Id} | ${it.paymentSystem} | ${it.duplicateType} | ${formatCurrency(it.amount, it.currency)} | prob=${(it.probability * 100).toFixed(1)}% | status=${it.status} | matched=${(it.matchedFields ?? []).join(",")}`
-        ),
-      ].join("\n")
-    : "Data is still loading.";
+  const reviews = reviewData?.reviews ?? [];
+  const total = reviewData?.total ?? 0;
+  const totalPages = reviewData?.totalPages ?? 1;
+  const hasReviews = total > 0 || isLoading;
+
+  // Filter by search (client-side on current page)
+  const filtered = searchTerm
+    ? reviews.filter(r =>
+        r.payment.payment1Id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        r.payment.payment2Id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        r.payment.paymentSystem.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        r.payment.duplicateType.toLowerCase().includes(searchTerm.toLowerCase())
+      )
+    : reviews;
+
+  // Status counts from the current data
+  const statusCounts = reviews.reduce((acc, r) => {
+    acc[r.status] = (acc[r.status] ?? 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+
+  if (!user) return null;
 
   return (
-    <div className="space-y-6">
-      {/* ── Header ── */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+    <div className="flex flex-col gap-5 p-6 min-h-screen">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-display font-bold text-foreground">Duplicate Findings</h1>
-          <p className="text-muted-foreground mt-1">Review and action potential duplicate payments.</p>
+          <h1 className="text-xl font-bold text-white">Duplicate Payment Review</h1>
+          <p className="text-sm text-slate-400 mt-0.5">
+            Reviewing as <span className="text-violet-300 font-medium">{user.displayName}</span>
+          </p>
         </div>
-        <div className="flex items-center gap-3">
-          <Button variant={chatOpen ? "default" : "outline"} className="gap-2" onClick={() => setChatOpen(o => !o)}>
-            <MessageSquare className="w-4 h-4" />
-            Ask Agent
-            {chatOpen && <X className="w-3.5 h-3.5 ml-0.5 opacity-60" />}
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={() => fetchMutation.mutate()}
+            disabled={fetchMutation.isPending}
+            className="flex items-center gap-2 bg-violet-600 hover:bg-violet-500 text-white text-sm px-4 py-2 rounded-lg disabled:opacity-60"
+          >
+            {fetchMutation.isPending ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Fetching…</>
+            ) : (
+              <><Sparkles className="w-4 h-4" /> Fetch Duplicate Payments</>
+            )}
           </Button>
-          <Button variant="outline" className="gap-2">
-            <SlidersHorizontal className="w-4 h-4" />
-            Filters
-          </Button>
-          <Button onClick={() => exportMutation.mutate({ data: { format: "csv" } })} disabled={exportMutation.isPending} className="gap-2">
-            <Download className="w-4 h-4" />
-            {exportMutation.isPending ? "Exporting..." : "Export CSV"}
-          </Button>
+          <button
+            onClick={logout}
+            className="p-2 rounded-lg border border-white/10 text-slate-400 hover:text-white hover:bg-white/8 transition-colors"
+            title="Switch user"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
-      {/* ── Table ── */}
-      <Card className="overflow-hidden border-border/50">
-        <div className="p-4 border-b border-border/50 bg-secondary/20 flex gap-4">
-          <div className="relative flex-1 max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <input
-              type="text"
-              placeholder="Search IDs or BICs..."
-              className="w-full pl-9 pr-4 py-2 rounded-lg bg-background border border-border focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all text-sm outline-none"
-            />
-          </div>
-          <select
-            className="px-4 py-2 rounded-lg bg-background border border-border focus:ring-2 focus:ring-primary/50 outline-none text-sm appearance-none min-w-[150px]"
-            value={systemFilter}
-            onChange={e => { setSystemFilter(e.target.value); setPage(1); }}
-          >
-            <option value="">All Systems</option>
-            <option value="SWIFT_MT">SWIFT MT</option>
-            <option value="SWIFT_MX">SWIFT MX (ISO 20022)</option>
-            <option value="ACH">ACH</option>
-            <option value="INTERNAL">Internal</option>
-          </select>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm text-left">
-            <thead className="text-xs text-muted-foreground uppercase bg-secondary/10 border-b border-border/50">
-              <tr>
-                <th className="px-6 py-4 font-semibold tracking-wider">Payment IDs</th>
-                <th className="px-6 py-4 font-semibold tracking-wider">System & Type</th>
-                <th className="px-6 py-4 font-semibold tracking-wider">Amount</th>
-                <th className="px-6 py-4 font-semibold tracking-wider">Matched On</th>
-                <th className="px-6 py-4 font-semibold tracking-wider">Probability</th>
-                <th className="px-6 py-4 font-semibold tracking-wider">Status</th>
-                <th className="px-6 py-4 font-semibold tracking-wider text-right">Compare</th>
-              </tr>
-            </thead>
-            <tbody>
-              {isLoading ? (
-                <tr>
-                  <td colSpan={7} className="px-6 py-12 text-center text-muted-foreground">
-                    <div className="flex justify-center mb-2">
-                      <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-                    </div>
-                    Loading payments...
-                  </td>
-                </tr>
-              ) : data?.items.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-6 py-12 text-center text-muted-foreground">
-                    No duplicate payments found matching criteria.
-                  </td>
-                </tr>
-              ) : (
-                data?.items.map(item => {
-                  const isExpanded = expandedId === item.id;
-                  return (
-                    <Fragment key={item.id}>
-                      <tr
-                        onClick={() => toggleExpand(item.id)}
-                        className={`border-b border-border/30 hover:bg-secondary/20 transition-colors cursor-pointer group ${isExpanded ? "bg-secondary/20 border-primary/20" : ""}`}
-                      >
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-2">
-                            <span className="inline-block w-2 h-2 rounded-full bg-blue-400 flex-shrink-0" />
-                            <span className="font-mono text-xs text-foreground">{item.payment1Id}</span>
-                          </div>
-                          <div className="flex items-center gap-2 mt-1">
-                            <ArrowRight className="w-2 h-2 text-muted-foreground flex-shrink-0" />
-                            <span className="font-mono text-xs text-muted-foreground">{item.payment2Id}</span>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="font-medium text-foreground">{item.paymentSystem}</div>
-                          <div className="text-xs text-muted-foreground capitalize">{item.duplicateType.replace(/_/g, " ")}</div>
-                        </td>
-                        <td className="px-6 py-4 font-medium text-foreground">
-                          {formatCurrency(item.amount, item.currency)}
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="flex flex-wrap gap-1 max-w-[180px]">
-                            {(item.matchedFields ?? []).slice(0, 3).map(f => (
-                              <span key={f} className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-primary/15 text-primary uppercase tracking-wide">
-                                {f.replace(/_/g, " ")}
-                              </span>
-                            ))}
-                            {(item.matchedFields ?? []).length > 3 && (
-                              <span className="text-[10px] text-muted-foreground">+{item.matchedFields!.length - 3}</span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <ProbabilityBadge probability={item.probability} />
-                        </td>
-                        <td className="px-6 py-4" onClick={e => e.stopPropagation()}>
-                          {/* Clickable status badge opens ReviewModal */}
-                          <button
-                            onClick={() => setReviewItem(item as DuplicateItem)}
-                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border transition-colors cursor-pointer ${STATUS_STYLES[item.status] ?? "bg-secondary text-muted-foreground border-border/50 hover:bg-secondary/80"}`}
-                            title="Click to review with Training Agent"
-                          >
-                            <Brain className="w-3 h-3" />
-                            {item.status.replace(/_/g, " ")}
-                          </button>
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          <Button variant="ghost" size="sm" className="gap-1.5 text-xs">
-                            <Eye className="w-3.5 h-3.5" />
-                            {isExpanded
-                              ? <><span>Hide</span><ChevronUp className="w-3.5 h-3.5" /></>
-                              : <><span>Compare</span><ChevronDown className="w-3.5 h-3.5" /></>}
-                          </Button>
-                        </td>
-                      </tr>
-                      {isExpanded && (
-                        <tr>
-                          <td colSpan={7} className="p-0 bg-secondary/5 border-b border-primary/20">
-                            <AnimatePresence>
-                              <DetailPanel item={item as DuplicateItem} />
-                            </AnimatePresence>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {data && (
-          <div className="p-4 border-t border-border/50 flex items-center justify-between text-sm text-muted-foreground bg-secondary/10">
-            <div>
-              Showing{" "}
-              <span className="font-medium text-foreground">{(page - 1) * data.limit + 1}</span> to{" "}
-              <span className="font-medium text-foreground">{Math.min(page * data.limit, data.total)}</span> of{" "}
-              <span className="font-medium text-foreground">{data.total}</span> results
-            </div>
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>Previous</Button>
-              <span className="px-3 py-1 text-xs bg-secondary/50 rounded-md border border-border/50">
-                {page} / {data.totalPages}
-              </span>
-              <Button variant="outline" size="sm" onClick={() => setPage(p => Math.min(data.totalPages, p + 1))} disabled={page === data.totalPages}>Next</Button>
-            </div>
-          </div>
-        )}
-      </Card>
-
-      {/* ── Portals ── */}
+      {/* Master Agent summary after fetch */}
       <AnimatePresence>
-        {chatOpen && <AgentChatPanel key="chat" onClose={() => setChatOpen(false)} pageContext={pageContext} />}
+        {fetchSummary && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className="bg-violet-500/10 border border-violet-500/20 rounded-xl p-4 flex gap-3"
+          >
+            <Brain className="w-5 h-5 text-violet-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-xs font-semibold text-violet-300 mb-1">Master Agent</p>
+              <p className="text-xs text-slate-300 leading-relaxed">{fetchSummary}</p>
+            </div>
+            <button onClick={() => setFetchSummary(null)} className="ml-auto text-slate-500 hover:text-white">
+              <X className="w-4 h-4" />
+            </button>
+          </motion.div>
+        )}
       </AnimatePresence>
 
+      {/* Stats row */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label: "Total Assigned", value: total, color: "text-white" },
+          { label: "Pending",   value: statusCounts.pending ?? 0,             color: "text-yellow-400" },
+          { label: "Confirmed", value: statusCounts.confirmed_duplicate ?? 0,  color: "text-red-400" },
+          { label: "Dismissed", value: statusCounts.dismissed ?? 0,            color: "text-green-400" },
+        ].map(({ label, value, color }) => (
+          <Card key={label} className="bg-white/4 border border-white/8 px-4 py-3">
+            <p className="text-[11px] text-slate-500 uppercase tracking-wider">{label}</p>
+            <p className={`text-2xl font-bold mt-0.5 ${color}`}>{value}</p>
+          </Card>
+        ))}
+      </div>
+
+      {/* Empty state */}
+      {!isLoading && total === 0 && (
+        <div className="flex-1 flex flex-col items-center justify-center py-20 gap-4">
+          <div className="w-16 h-16 rounded-2xl bg-white/4 border border-white/8 flex items-center justify-center">
+            <Eye className="w-8 h-8 text-slate-600" />
+          </div>
+          <div className="text-center">
+            <p className="text-white font-medium">No payments assigned yet</p>
+            <p className="text-sm text-slate-500 mt-1">
+              Click "Fetch Duplicate Payments" to load your review queue
+            </p>
+          </div>
+          <Button
+            onClick={() => fetchMutation.mutate()}
+            disabled={fetchMutation.isPending}
+            className="mt-2 flex items-center gap-2 bg-violet-600 hover:bg-violet-500 text-white px-6 py-2.5 rounded-xl"
+          >
+            {fetchMutation.isPending ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Fetching…</>
+            ) : (
+              <><Sparkles className="w-4 h-4" /> Fetch Duplicate Payments</>
+            )}
+          </Button>
+        </div>
+      )}
+
+      {/* Table area */}
+      {(isLoading || total > 0) && (
+        <Card className="bg-white/4 border border-white/8 rounded-xl overflow-hidden flex flex-col">
+          {/* Filters */}
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 border-b border-white/8">
+            <div className="flex gap-1">
+              {STATUS_TAB_FILTERS.map(f => (
+                <button
+                  key={f.key}
+                  onClick={() => { setStatusFilter(f.key); setPage(1); }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    statusFilter === f.key
+                      ? "bg-violet-600 text-white"
+                      : "text-slate-400 hover:text-white hover:bg-white/8"
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+              <input
+                value={searchTerm}
+                onChange={e => setSearchTerm(e.target.value)}
+                placeholder="Search payments…"
+                className="pl-8 pr-3 py-1.5 text-xs bg-white/6 border border-white/10 rounded-lg text-white placeholder:text-slate-600 focus:outline-none focus:border-violet-500/50 w-52"
+              />
+            </div>
+          </div>
+
+          {/* Table */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-white/8">
+                  {["Payment IDs", "System", "Amount", "Probability", "Status", "Date", ""].map(h => (
+                    <th key={h} className="text-left px-4 py-3 text-[11px] font-medium text-slate-500 uppercase tracking-wider">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {isLoading ? (
+                  Array.from({ length: 8 }).map((_, i) => (
+                    <tr key={i} className="border-b border-white/5">
+                      {Array.from({ length: 6 }).map((__, j) => (
+                        <td key={j} className="px-4 py-3">
+                          <div className="h-4 bg-white/6 rounded animate-pulse w-24" />
+                        </td>
+                      ))}
+                    </tr>
+                  ))
+                ) : filtered.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-10 text-center text-slate-500 text-xs">
+                      No payments match your filters
+                    </td>
+                  </tr>
+                ) : (
+                  filtered.map(rev => {
+                    const p = rev.payment;
+                    return (
+                      <tr
+                        key={rev.id}
+                        onClick={() => setSelectedReview(rev)}
+                        className="border-b border-white/5 hover:bg-white/4 cursor-pointer transition-colors"
+                      >
+                        <td className="px-4 py-3">
+                          <div className="font-mono text-slate-300 text-[11px]">{p.payment1Id}</div>
+                          <div className="font-mono text-slate-500 text-[10px]">↔ {p.payment2Id}</div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="text-slate-300">{p.paymentSystem}</div>
+                          <div className="text-slate-600 text-[10px]">{p.duplicateType.replace(/_/g, " ")}</div>
+                        </td>
+                        <td className="px-4 py-3 text-slate-300 whitespace-nowrap">
+                          {formatCurrency(p.amount, p.currency)}
+                        </td>
+                        <td className="px-4 py-3">
+                          <ProbabilityBadge probability={p.probability} />
+                        </td>
+                        <td className="px-4 py-3">
+                          <StatusBadge status={rev.status} />
+                        </td>
+                        <td className="px-4 py-3 text-slate-500 whitespace-nowrap">
+                          {p.paymentDate1 ? new Date(p.paymentDate1).toLocaleDateString() : "—"}
+                        </td>
+                        <td className="px-4 py-3">
+                          <ChevronRight className="w-4 h-4 text-slate-600" />
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-4 py-3 border-t border-white/8">
+              <p className="text-xs text-slate-500">
+                Page {page} of {totalPages} · {total} total
+              </p>
+              <div className="flex gap-1">
+                <button
+                  disabled={page <= 1}
+                  onClick={() => setPage(p => p - 1)}
+                  className="px-2.5 py-1 text-xs rounded-lg border border-white/10 text-slate-400 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Prev
+                </button>
+                <button
+                  disabled={page >= totalPages}
+                  onClick={() => setPage(p => p + 1)}
+                  className="px-2.5 py-1 text-xs rounded-lg border border-white/10 text-slate-400 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* Review Modal */}
       <AnimatePresence>
-        {reviewItem && <ReviewModal key={reviewItem.id} item={reviewItem} onClose={() => setReviewItem(null)} />}
+        {selectedReview && (
+          <ReviewModal
+            review={selectedReview}
+            userId={user.id}
+            onClose={() => setSelectedReview(null)}
+            onStatusChange={handleStatusChange}
+          />
+        )}
       </AnimatePresence>
     </div>
   );

@@ -183,6 +183,53 @@ class PaymentRecord(Base):
     is_scanned = Column(Boolean, default=False)
 
 
+PREDEFINED_USERS = [
+    {"id": "user_1",  "username": "alice_chen",     "display_name": "Alice Chen"},
+    {"id": "user_2",  "username": "bob_martinez",   "display_name": "Bob Martinez"},
+    {"id": "user_3",  "username": "carol_smith",    "display_name": "Carol Smith"},
+    {"id": "user_4",  "username": "david_kim",      "display_name": "David Kim"},
+    {"id": "user_5",  "username": "emma_wilson",    "display_name": "Emma Wilson"},
+    {"id": "user_6",  "username": "frank_johnson",  "display_name": "Frank Johnson"},
+    {"id": "user_7",  "username": "grace_liu",      "display_name": "Grace Liu"},
+    {"id": "user_8",  "username": "henry_brown",    "display_name": "Henry Brown"},
+    {"id": "user_9",  "username": "iris_patel",     "display_name": "Iris Patel"},
+    {"id": "user_10", "username": "james_taylor",   "display_name": "James Taylor"},
+]
+
+
+class UserRecord(Base):
+    __tablename__ = "dup_users"
+
+    id = Column(String, primary_key=True)
+    username = Column(String, nullable=False, unique=True)
+    display_name = Column(String, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class UserReviewRecord(Base):
+    """One analyst's review of one duplicate payment — status is per-user."""
+    __tablename__ = "dup_user_reviews"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, nullable=False)
+    duplicate_payment_id = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="pending")
+    notes = Column(Text)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class UserReviewMessageRecord(Base):
+    """Training Agent conversation messages for a specific user review."""
+    __tablename__ = "dup_user_review_messages"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    review_id = Column(String, nullable=False)
+    role = Column(String, nullable=False)
+    content = Column(Text, nullable=False)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -193,10 +240,32 @@ def get_db():
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _seed_users()
     _seed_sample_data()
     # Import here to avoid circular imports
     from seed_payments import seed_payment_database
     seed_payment_database()
+
+
+def _seed_users():
+    """Ensure all 10 predefined analyst users exist in the database."""
+    db = SessionLocal()
+    try:
+        for u in PREDEFINED_USERS:
+            existing = db.query(UserRecord).filter(UserRecord.id == u["id"]).first()
+            if not existing:
+                db.add(UserRecord(
+                    id=u["id"],
+                    username=u["username"],
+                    display_name=u["display_name"],
+                    created_at=datetime.now(timezone.utc),
+                ))
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"Warning: Could not seed users: {e}")
+    finally:
+        db.close()
 
 
 def _seed_sample_data():

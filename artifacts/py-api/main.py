@@ -16,6 +16,7 @@ from routes import (
     schema as schema_route,
     exports,
     payments,
+    user_reviews,
 )
 from db import init_db
 
@@ -46,6 +47,7 @@ app.include_router(console.router, prefix="/py-api/console", tags=["console"])
 app.include_router(schema_route.router, prefix="/py-api/schema", tags=["schema"])
 app.include_router(exports.router, prefix="/py-api/exports", tags=["exports"])
 app.include_router(payments.router, prefix="/py-api/payments", tags=["payments"])
+app.include_router(user_reviews.router, prefix="/py-api/user-reviews", tags=["user-reviews"])
 
 
 if __name__ == "__main__":
