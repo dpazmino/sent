@@ -10,28 +10,38 @@ router = APIRouter()
 
 @router.get("/stats")
 def get_dashboard_stats(db: Session = Depends(get_db)):
-    total = db.query(DuplicatePaymentRecord).count()
-    high = db.query(DuplicatePaymentRecord).filter(DuplicatePaymentRecord.probability >= 0.8).count()
-    medium = db.query(DuplicatePaymentRecord).filter(
+    # Dismissed = confirmed false positives; exclude them from risk metrics
+    active = db.query(DuplicatePaymentRecord).filter(
+        DuplicatePaymentRecord.status != "dismissed"
+    )
+
+    total = active.count()
+    high = active.filter(DuplicatePaymentRecord.probability >= 0.8).count()
+    medium = active.filter(
         DuplicatePaymentRecord.probability >= 0.5,
         DuplicatePaymentRecord.probability < 0.8
     ).count()
-    low = db.query(DuplicatePaymentRecord).filter(DuplicatePaymentRecord.probability < 0.5).count()
-    
-    amount_result = db.query(func.sum(DuplicatePaymentRecord.amount)).scalar() or 0
-    
+    low = active.filter(DuplicatePaymentRecord.probability < 0.5).count()
+
+    amount_result = db.query(func.sum(DuplicatePaymentRecord.amount)).filter(
+        DuplicatePaymentRecord.status != "dismissed"
+    ).scalar() or 0
+
     confirmed = db.query(DuplicatePaymentRecord).filter(DuplicatePaymentRecord.status == "confirmed_duplicate").count()
     pending = db.query(DuplicatePaymentRecord).filter(DuplicatePaymentRecord.status == "pending").count()
+    under_review = db.query(DuplicatePaymentRecord).filter(DuplicatePaymentRecord.status == "under_review").count()
     dismissed = db.query(DuplicatePaymentRecord).filter(DuplicatePaymentRecord.status == "dismissed").count()
-    
+
     by_system_rows = db.query(
         DuplicatePaymentRecord.payment_system,
         func.count(DuplicatePaymentRecord.id)
+    ).filter(
+        DuplicatePaymentRecord.status != "dismissed"
     ).group_by(DuplicatePaymentRecord.payment_system).all()
     by_system = {row[0]: row[1] for row in by_system_rows}
-    
+
     last_rec = db.query(DuplicatePaymentRecord).order_by(DuplicatePaymentRecord.detected_at.desc()).first()
-    
+
     return {
         "totalDuplicatesFound": total,
         "highProbabilityCount": high,
@@ -40,6 +50,7 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
         "totalAmountAtRisk": round(float(amount_result), 2),
         "confirmedDuplicates": confirmed,
         "pendingReview": pending,
+        "underReviewCount": under_review,
         "dismissedCount": dismissed,
         "byPaymentSystem": by_system,
         "lastScanAt": last_rec.detected_at.isoformat() if last_rec and last_rec.detected_at else None,

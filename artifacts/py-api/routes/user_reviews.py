@@ -28,6 +28,19 @@ router = APIRouter()
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+def _sync_global_status(rev: UserReviewRecord, new_status: str, db: Session) -> None:
+    """Mirror an analyst's review decision back to the duplicate payments DB.
+
+    Last writer wins — whichever analyst acted most recently sets the global
+    status.  The main payments table (PaymentRecord) is never touched.
+    """
+    dup = db.query(DuplicatePaymentRecord).filter(
+        DuplicatePaymentRecord.id == rev.duplicate_payment_id
+    ).first()
+    if dup:
+        dup.status = new_status
+
+
 def _review_to_dict(rev: UserReviewRecord, dup: DuplicatePaymentRecord) -> dict:
     return {
         "id": rev.id,
@@ -311,6 +324,7 @@ async def chat_with_review_agent(
     if result.get("statusUpdate"):
         rev.status = result["statusUpdate"]
         rev.updated_at = datetime.now(timezone.utc)
+        _sync_global_status(rev, result["statusUpdate"], db)
 
     db.commit()
 
@@ -370,6 +384,7 @@ def update_review_status(
     rev.status = new_status
     rev.notes = body.get("notes", rev.notes)
     rev.updated_at = datetime.now(timezone.utc)
+    _sync_global_status(rev, new_status, db)
     db.commit()
 
     return {"success": True, "status": rev.status, "reviewId": rev.id}
