@@ -1,13 +1,19 @@
 """
-Trainable AI Agent with persistent memory.
-Supports two training modes:
-1. Database schema understanding
-2. Custom duplicate payment definitions
+Training Agent — LangGraph with ConversationBufferMemory (MemorySaver).
+
+Uses LangGraph's MemorySaver as the ConversationBufferMemory equivalent:
+- All messages stored in state with no truncation (buffer = unlimited)
+- State keyed by thread_id (= session UUID) — survives across multiple API calls
+- If server restarts, DB history is re-synced into LangGraph state automatically
+
+Only this agent is trainable. All other agents are read-only from the UI.
 """
-import os
-import json
-from openai import AsyncOpenAI
-from typing import List, Dict
+from typing import Optional
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
+from langgraph.checkpoint.memory import MemorySaver
+from agents.base_langgraph import AgentState, get_llm, build_agent_graph
+
+# ── System Prompts ─────────────────────────────────────────────────────────────
 
 TRAINING_AGENT_SYSTEM_PROMPT = """You are the Sentinel Training Agent — a specialist AI responsible for building, maintaining, and validating the institutional knowledge base that all other Sentinel agents rely on. You operate as a structured learning system: every piece of knowledge you accept from an analyst is formalised, confirmed, and stored permanently in the platform's memory layer.
 
@@ -131,68 +137,95 @@ DUPLICATE DEFINITION COLLECTION CHECKLIST:
 Start by asking: "Which payment system do you want to define duplicate rules for first — SWIFT MX, SWIFT MT, ACH, or Internal payments?"
 """
 
+# ── ConversationBufferMemory via MemorySaver ──────────────────────────────────
+# MemorySaver stores ALL messages for each thread_id (= session UUID) without
+# any truncation. This is equivalent to LangChain's ConversationBufferMemory.
+# The store lives for the lifetime of the Python process; DB is the durable
+# backup that re-populates LangGraph state after a server restart.
 
-def get_openai_client():
-    base_url = os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
-    api_key = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")
-    
-    if base_url and api_key:
-        return AsyncOpenAI(base_url=base_url, api_key=api_key)
-    
-    api_key_direct = os.environ.get("OPENAI_API_KEY")
-    if api_key_direct:
-        return AsyncOpenAI(api_key=api_key_direct)
-    
-    raise RuntimeError("No OpenAI API key configured.")
+_training_memory = MemorySaver()
+
+# Compiled graphs keyed by training_type (one graph per type, shared memory store)
+_graphs: dict = {}
 
 
-def build_training_messages(training_type: str, conversation_history: List[dict], user_message: str) -> List[dict]:
-    system = TRAINING_AGENT_SYSTEM_PROMPT
-    if training_type == "database_schema":
-        system += DB_SCHEMA_PROMPT_EXTENSION
-    elif training_type == "duplicate_definition":
-        system += DUPLICATE_DEFINITION_PROMPT_EXTENSION
-    
-    messages = [{"role": "system", "content": system}]
-    for msg in conversation_history[-30:]:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-    messages.append({"role": "user", "content": user_message})
-    return messages
-
-
-def extract_memory_key(training_type: str, message: str) -> str:
-    keywords = message.lower().split()[:5]
-    slug = "_".join(w for w in keywords if len(w) > 2)[:40]
-    return f"{training_type}_{slug}"
+def _get_or_build_graph(training_type: str):
+    if training_type not in _graphs:
+        system = TRAINING_AGENT_SYSTEM_PROMPT
+        if training_type == "database_schema":
+            system += DB_SCHEMA_PROMPT_EXTENSION
+        elif training_type == "duplicate_definition":
+            system += DUPLICATE_DEFINITION_PROMPT_EXTENSION
+        llm = get_llm(temperature=0.3, max_tokens=2048)
+        _graphs[training_type] = build_agent_graph(system, llm, checkpointer=_training_memory)
+    return _graphs[training_type]
 
 
 async def run_training_agent(
     user_message: str,
     training_type: str,
-    conversation_history: List[dict],
-) -> Dict:
-    client = get_openai_client()
-    messages = build_training_messages(training_type, conversation_history, user_message)
-    
-    response = await client.chat.completions.create(
-        model="gpt-4o-mini",
-        max_tokens=2048,
-        messages=messages,
+    session_id: str,
+    db_history: Optional[list] = None,
+) -> dict:
+    """
+    Run the training agent for the given session.
+
+    LangGraph MemorySaver provides ConversationBufferMemory: the full conversation
+    history for this session_id is stored in memory and automatically prepended to
+    each new call — no manual history management needed.
+
+    If the in-process state is empty (e.g., after a server restart), we re-populate
+    it from the DB history so memory is never truly lost.
+    """
+    graph = _get_or_build_graph(training_type)
+    config = {"configurable": {"thread_id": session_id}}
+
+    # ── Restart recovery: sync DB history → LangGraph state if LangGraph is empty ──
+    current_state = graph.get_state(config)
+    langgraph_msgs = current_state.values.get("messages", []) if current_state.values else []
+
+    if not langgraph_msgs and db_history:
+        restore_msgs: list[BaseMessage] = []
+        for m in db_history:
+            if m["role"] == "user":
+                restore_msgs.append(HumanMessage(content=m["content"]))
+            elif m["role"] == "assistant":
+                restore_msgs.append(AIMessage(content=m["content"]))
+        if restore_msgs:
+            graph.update_state(config, {"messages": restore_msgs})
+
+    # ── Invoke with the new user message ──
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content=user_message)]},
+        config=config,
     )
-    
-    assistant_response = response.choices[0].message.content or ""
-    
-    should_save = any(phrase in user_message.lower() for phrase in [
-        "my database", "our table", "the column", "we define", "duplicate means",
-        "is a duplicate", "are duplicates", "threshold", "criteria", "rule",
-        "table name", "field name", "schema", "structure", "we use", "our system"
-    ])
-    
-    memory_key = extract_memory_key(training_type, user_message)
-    
+
+    response_text = result["messages"][-1].content
+
+    # ── Detect if agent committed to saving a rule ──
+    import re
+    remember_match = re.search(
+        r"I[''\u2019]ll remember:?\s*(.+?)(?:\n|$)",
+        response_text,
+        re.IGNORECASE,
+    )
+    should_save = bool(remember_match)
+    memory_key = None
+    memory_content = None
+
+    if should_save:
+        distilled = remember_match.group(1).strip()
+        words = user_message.split()[:5]
+        slug = "_".join(w.lower() for w in words if len(w) > 2)[:40]
+        memory_key = f"{training_type}_{slug}"
+        memory_content = (
+            f"Rule: {distilled}\n"
+            f"Context: {training_type}, analyst said: '{user_message[:200]}'"
+        )
+
     return {
-        "response": assistant_response,
+        "response": response_text,
         "memorySaved": should_save,
-        "memoryKey": memory_key if should_save else None,
-        "memoryContent": f"User said: {user_message}\n\nAgent learned: {assistant_response[:500]}" if should_save else None,
+        "memoryKey": memory_key,
+        "memoryContent": memory_content,
     }

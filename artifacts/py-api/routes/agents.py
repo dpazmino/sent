@@ -5,7 +5,7 @@ from db import get_db, ConversationRecord, ConversationMessageRecord, DuplicateP
 from agents.master_agent import run_master_agent, MASTER_AGENT_SYSTEM_PROMPT
 from agents.text_to_sql_agent import generate_sql, generate_graph_spec, TEXT_TO_SQL_SYSTEM_PROMPT, GRAPH_SYSTEM_PROMPT
 from agents.detector_agents import get_all_detector_opinions, DETECTOR_AGENTS
-from agents.training_agent import TRAINING_AGENT_SYSTEM_PROMPT
+from agents.training_agent import TRAINING_AGENT_SYSTEM_PROMPT  # noqa: F401 — displayed in agent list
 from datetime import datetime, timezone
 
 router = APIRouter()
@@ -18,7 +18,7 @@ ALL_AGENTS = [
         "description": "Top-level agent that orchestrates all detection activity. Knows every payment standard — SWIFT MT/MX, ACH, ISO 20022 — and provides expert analysis and recommendations.",
         "focus": "All payment systems",
         "systemPrompt": MASTER_AGENT_SYSTEM_PROMPT,
-        "isTrainable": True,
+        "isTrainable": False,
     },
     {
         "id": "text_to_sql",
@@ -27,7 +27,7 @@ ALL_AGENTS = [
         "description": "Converts natural language questions into precise SQL queries against the payment database. Learns schema definitions from training sessions.",
         "focus": "Database querying",
         "systemPrompt": TEXT_TO_SQL_SYSTEM_PROMPT,
-        "isTrainable": True,
+        "isTrainable": False,
     },
     {
         "id": "graph_chart",
@@ -42,7 +42,7 @@ ALL_AGENTS = [
         "id": "training",
         "name": "Training Agent",
         "category": "memory",
-        "description": "Manages persistent agent memory. Accepts schema definitions and custom duplicate rules from analysts and stores them for use by other agents.",
+        "description": "Manages persistent agent memory. Accepts schema definitions and custom duplicate rules from analysts and stores them for use by other agents. Uses LangGraph ConversationBufferMemory for full conversation persistence.",
         "focus": "Schema & rule learning",
         "systemPrompt": TRAINING_AGENT_SYSTEM_PROMPT,
         "isTrainable": True,
@@ -55,7 +55,7 @@ ALL_AGENTS = [
         "description": agent["description"],
         "focus": agent["focus"],
         "systemPrompt": agent["system_prompt"],
-        "isTrainable": True,
+        "isTrainable": False,
     }
     for agent in DETECTOR_AGENTS
 ]

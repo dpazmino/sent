@@ -60,12 +60,14 @@ async def send_training_message(session_id: str, body: dict, db: Session = Depen
     
     user_message = body.get("message", "")
     
+    # Load DB history for restart-recovery: if LangGraph MemorySaver is empty
+    # (e.g., after a server restart), run_training_agent will re-sync from this list.
     history_records = db.query(TrainingMessageRecord).filter(
         TrainingMessageRecord.session_id == session_id
     ).order_by(TrainingMessageRecord.timestamp).all()
-    history = [{"role": m.role, "content": m.content} for m in history_records]
-    
-    result = await run_training_agent(user_message, session.training_type, history)
+    db_history = [{"role": m.role, "content": m.content} for m in history_records]
+
+    result = await run_training_agent(user_message, session.training_type, session_id, db_history)
     
     user_msg = TrainingMessageRecord(
         id=str(uuid.uuid4()),

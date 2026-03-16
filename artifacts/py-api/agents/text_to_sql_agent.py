@@ -2,9 +2,7 @@
 Text-to-SQL Agent.
 Reads the data source schema definition and converts natural language queries to SQL.
 """
-import os
 import json
-from openai import AsyncOpenAI
 
 TEXT_TO_SQL_SYSTEM_PROMPT = """You are the Sentinel Text-to-SQL Agent — a precision SQL generation specialist embedded in a banking duplicate payment detection platform. Your sole function is to translate natural language questions from payment operations analysts, compliance officers, and senior management into correct, efficient, safe PostgreSQL SELECT queries against the Sentinel database schema.
 
@@ -208,40 +206,38 @@ IMPORTANT: Build every data point exclusively from the REAL DATA provided. Do no
 """
 
 
-def get_openai_client():
-    base_url = os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL")
-    api_key = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")
-    
-    if base_url and api_key:
-        return AsyncOpenAI(base_url=base_url, api_key=api_key)
-    
-    api_key_direct = os.environ.get("OPENAI_API_KEY")
-    if api_key_direct:
-        return AsyncOpenAI(api_key=api_key_direct)
-    
-    raise RuntimeError("No OpenAI API key configured.")
-
-
 async def generate_sql(natural_language_query: str, schema_context: str = "") -> str:
-    client = get_openai_client()
-    
+    """Generate SQL using a LangGraph single-node agent."""
+    from agents.base_langgraph import AgentState, get_llm
+    from langgraph.graph import StateGraph, END
+    from langchain_core.messages import HumanMessage, SystemMessage
+
     system = TEXT_TO_SQL_SYSTEM_PROMPT
     if schema_context:
         system += f"\n\n## Additional Schema Context (User-Defined)\n{schema_context}"
-    
-    response = await client.chat.completions.create(
-        model="gpt-4o-mini",
-        max_tokens=1024,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": natural_language_query},
-        ],
-    )
-    return response.choices[0].message.content or ""
+
+    llm = get_llm(temperature=0.0, max_tokens=1024)
+
+    def call_model(state: AgentState):
+        messages = [SystemMessage(content=system)] + state["messages"]
+        response = llm.invoke(messages)
+        return {"messages": [response]}
+
+    g = StateGraph(AgentState)
+    g.add_node("agent", call_model)
+    g.set_entry_point("agent")
+    g.add_edge("agent", END)
+    compiled = g.compile()
+
+    result = await compiled.ainvoke({"messages": [HumanMessage(content=natural_language_query)]})
+    return result["messages"][-1].content or ""
 
 
 async def generate_graph_spec(query: str, sql_used: str = "", real_data: list = None, memory_context: str = "") -> dict:
-    client = get_openai_client()
+    """Generate chart specification using a LangGraph single-node agent."""
+    from agents.base_langgraph import AgentState, get_llm
+    from langgraph.graph import StateGraph, END
+    from langchain_core.messages import HumanMessage, SystemMessage
 
     system = GRAPH_SYSTEM_PROMPT
     if memory_context:
@@ -260,20 +256,25 @@ SQL executed: {sql_used or "N/A"}
 
 Build a chart from the real data above. Return ONLY valid JSON with the structure specified."""
 
-    response = await client.chat.completions.create(
-        model="gpt-4o-mini",
-        max_tokens=2048,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-    )
+    llm = get_llm(temperature=0.1, max_tokens=2048)
 
-    content = response.choices[0].message.content or "{}"
-    if content.startswith("```json"):
-        content = content[7:]
-    if content.startswith("```"):
-        content = content[3:]
+    def call_model(state: AgentState):
+        messages = [SystemMessage(content=system)] + state["messages"]
+        response = llm.invoke(messages)
+        return {"messages": [response]}
+
+    g = StateGraph(AgentState)
+    g.add_node("agent", call_model)
+    g.set_entry_point("agent")
+    g.add_edge("agent", END)
+    compiled = g.compile()
+
+    result = await compiled.ainvoke({"messages": [HumanMessage(content=prompt)]})
+    content = result["messages"][-1].content or "{}"
+
+    for tag in ("```json", "```"):
+        if content.startswith(tag):
+            content = content[len(tag):]
     if content.endswith("```"):
         content = content[:-3]
     content = content.strip()
