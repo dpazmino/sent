@@ -203,12 +203,16 @@ export default function GraphChat() {
                         animate={{ opacity: 1, y: 0 }}
                         className="bg-card border border-border/60 rounded-2xl rounded-tl-sm p-5 shadow-lg space-y-4 w-full"
                       >
-                        <h3 className="font-display font-semibold text-lg text-foreground border-b border-border/50 pb-3">
-                          {item.response.graphSpec.title}
-                        </h3>
-                        <div className="pt-2">
-                          {renderChart(item.response.graphSpec)}
-                        </div>
+                        {item.response.graphSpec?.title && (
+                          <h3 className="font-display font-semibold text-lg text-foreground border-b border-border/50 pb-3">
+                            {item.response.graphSpec.title}
+                          </h3>
+                        )}
+                        {item.response.graphSpec && (
+                          <div className="pt-2">
+                            {renderChart(item.response.graphSpec)}
+                          </div>
+                        )}
                         <div className="bg-secondary/30 p-4 rounded-xl text-sm text-muted-foreground leading-relaxed">
                           <p><span className="text-foreground font-medium mr-1">Insight:</span> {item.response.explanation}</p>
                           {item.response.sqlUsed && (
