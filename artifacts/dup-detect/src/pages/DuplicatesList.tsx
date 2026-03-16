@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useUser } from "@/contexts/UserContext";
 import { Card } from "@/components/ui/Card";
@@ -9,8 +9,8 @@ import {
   Download, Search, Eye, Bot, Send, X, User,
   Brain, Shield, GitBranch, Network, Blend, Activity,
   Loader2, Sparkles, CheckCircle2, XCircle, Clock,
-  AlertTriangle, LogOut, RefreshCw, ChevronRight,
-  MessageSquare, BarChart3,
+  AlertTriangle, LogOut, RefreshCw, ChevronRight, ChevronDown,
+  MessageSquare, BarChart3, ArrowLeftRight, CheckCheck,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -85,6 +85,162 @@ const STATUS_TAB_FILTERS = [
   { key: "confirmed_duplicate", label: "Confirmed" },
   { key: "dismissed", label: "Dismissed" },
 ];
+
+const DUP_TYPE_DESC: Record<string, string> = {
+  exact_match:    "All identifying fields are identical — this is likely the same transaction submitted twice",
+  near_match:     "Most fields match with only minor differences — high likelihood of a duplicate",
+  time_window:    "Same payment submitted more than once within a short time window",
+  cross_system:   "Duplicate detected across different payment networks (e.g. SWIFT re-sent via ACH)",
+  same_reference: "Same payment reference number used for two distinct records",
+  same_day:       "Same amount and counterparties appear on the same calendar day",
+  fuzzy_match:    "Fields are highly similar but not identical — possible duplicate with minor edits",
+};
+
+const FIELD_LABELS: Record<string, string> = {
+  amount:              "Amount",
+  currency:            "Currency",
+  sender_bic:          "Sender BIC",
+  receiver_bic:        "Receiver BIC",
+  originator_country:  "Origin Country",
+  beneficiary_country: "Beneficiary Country",
+  value_date:          "Value Date",
+  payment_date:        "Payment Date",
+  reference:           "Reference",
+  transaction_id:      "Transaction ID",
+};
+
+// ─── Payment Comparison Accordion ────────────────────────────────────────────
+
+function PaymentAccordion({ payment }: { payment: Payment }) {
+  const matched = new Set((payment.matchedFields ?? []).map(f => f.toLowerCase()));
+
+  const dupTypeKey = payment.duplicateType?.toLowerCase().replace(/\s+/g, "_") ?? "";
+  const dupDesc = DUP_TYPE_DESC[dupTypeKey] ?? "Flagged as a likely duplicate payment";
+  const pct = Math.round(payment.probability * 100);
+
+  const sharedRows: { label: string; value: string; fieldKey: string }[] = [
+    { label: "Amount",       value: formatCurrency(payment.amount, payment.currency), fieldKey: "amount" },
+    { label: "Currency",     value: payment.currency,                                  fieldKey: "currency" },
+    { label: "Sender BIC",   value: payment.senderBIC ?? "—",                          fieldKey: "sender_bic" },
+    { label: "Receiver BIC", value: payment.receiverBIC ?? "—",                        fieldKey: "receiver_bic" },
+    { label: "Origin",       value: payment.originatorCountry ?? "—",                  fieldKey: "originator_country" },
+    { label: "Beneficiary",  value: payment.beneficiaryCountry ?? "—",                 fieldKey: "beneficiary_country" },
+    { label: "System",       value: payment.paymentSystem,                             fieldKey: "payment_system" },
+  ].filter(r => r.value && r.value !== "—");
+
+  const isMatchedField = (key: string) =>
+    matched.has(key) || matched.has(key.replace(/_/g, ""));
+
+  const date1Str = payment.paymentDate1 ? new Date(payment.paymentDate1).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "—";
+  const date2Str = payment.paymentDate2 ? new Date(payment.paymentDate2).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "—";
+  const datesMatch = date1Str === date2Str && date1Str !== "—";
+
+  return (
+    <div className="bg-[#090d14] border-t border-b border-white/6 px-4 py-4">
+      <div className="grid grid-cols-[1fr_auto_1fr] gap-4 items-start">
+
+        {/* ── Payment A ── */}
+        <div className="bg-white/3 border border-white/8 rounded-xl p-4 space-y-3">
+          <div className="flex items-center gap-2 mb-1">
+            <div className="w-1.5 h-1.5 rounded-full bg-violet-400" />
+            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Payment A</span>
+          </div>
+          <div>
+            <p className="text-[10px] text-slate-600 uppercase tracking-wider mb-0.5">Payment ID</p>
+            <p className="font-mono text-sm text-white font-bold">{payment.payment1Id}</p>
+          </div>
+          <div className={`rounded-lg px-3 py-2 ${datesMatch ? "bg-emerald-500/10 border border-emerald-500/20" : "bg-white/3 border border-white/8"}`}>
+            <p className="text-[10px] text-slate-600 uppercase tracking-wider mb-0.5">Date</p>
+            <p className={`text-xs font-medium ${datesMatch ? "text-emerald-300" : "text-slate-300"}`}>{date1Str}</p>
+          </div>
+          {sharedRows.map(row => (
+            <div
+              key={row.fieldKey}
+              className={`rounded-lg px-3 py-2 ${isMatchedField(row.fieldKey) ? "bg-emerald-500/10 border border-emerald-500/20" : "bg-white/3 border border-white/8"}`}
+            >
+              <p className="text-[10px] text-slate-600 uppercase tracking-wider mb-0.5">{row.label}</p>
+              <p className={`text-xs font-medium ${isMatchedField(row.fieldKey) ? "text-emerald-300" : "text-slate-300"}`}>
+                {row.value}
+                {isMatchedField(row.fieldKey) && <CheckCheck className="inline w-3 h-3 ml-1 text-emerald-400" />}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        {/* ── Middle: Evidence ── */}
+        <div className="flex flex-col items-center gap-3 pt-6 w-32">
+          <ArrowLeftRight className="w-5 h-5 text-slate-600" />
+          <div className="text-center">
+            <p className="text-[10px] text-slate-600 uppercase tracking-wider mb-1">Probability</p>
+            <p className={`text-2xl font-bold ${pct >= 80 ? "text-red-400" : pct >= 50 ? "text-yellow-400" : "text-green-400"}`}>{pct}%</p>
+          </div>
+          {/* Prob bar */}
+          <div className="w-full h-1.5 bg-white/8 rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all ${pct >= 80 ? "bg-red-400" : pct >= 50 ? "bg-yellow-400" : "bg-green-400"}`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-400/20 text-center leading-tight">
+            {payment.duplicateType.replace(/_/g, " ")}
+          </span>
+          {/* Matched count */}
+          <div className="text-center mt-1">
+            <p className="text-[10px] text-slate-600 uppercase tracking-wider">Matched</p>
+            <p className="text-lg font-bold text-emerald-400">{payment.matchedFields?.length ?? 0}</p>
+            <p className="text-[10px] text-slate-600">fields</p>
+          </div>
+        </div>
+
+        {/* ── Payment B ── */}
+        <div className="bg-white/3 border border-white/8 rounded-xl p-4 space-y-3">
+          <div className="flex items-center gap-2 mb-1">
+            <div className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Payment B</span>
+          </div>
+          <div>
+            <p className="text-[10px] text-slate-600 uppercase tracking-wider mb-0.5">Payment ID</p>
+            <p className="font-mono text-sm text-white font-bold">{payment.payment2Id}</p>
+          </div>
+          <div className={`rounded-lg px-3 py-2 ${datesMatch ? "bg-emerald-500/10 border border-emerald-500/20" : "bg-white/3 border border-white/8"}`}>
+            <p className="text-[10px] text-slate-600 uppercase tracking-wider mb-0.5">Date</p>
+            <p className={`text-xs font-medium ${datesMatch ? "text-emerald-300" : "text-slate-300"}`}>{date2Str}</p>
+          </div>
+          {sharedRows.map(row => (
+            <div
+              key={row.fieldKey}
+              className={`rounded-lg px-3 py-2 ${isMatchedField(row.fieldKey) ? "bg-emerald-500/10 border border-emerald-500/20" : "bg-white/3 border border-white/8"}`}
+            >
+              <p className="text-[10px] text-slate-600 uppercase tracking-wider mb-0.5">{row.label}</p>
+              <p className={`text-xs font-medium ${isMatchedField(row.fieldKey) ? "text-emerald-300" : "text-slate-300"}`}>
+                {row.value}
+                {isMatchedField(row.fieldKey) && <CheckCheck className="inline w-3 h-3 ml-1 text-emerald-400" />}
+              </p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Why duplicate */}
+      <div className="mt-4 bg-amber-500/8 border border-amber-500/20 rounded-xl px-4 py-3 flex gap-3">
+        <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+        <div>
+          <p className="text-[11px] font-semibold text-amber-300 uppercase tracking-wider mb-0.5">Why flagged as duplicate</p>
+          <p className="text-xs text-slate-300 leading-relaxed">{dupDesc}</p>
+          {payment.matchedFields && payment.matchedFields.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-2">
+              {payment.matchedFields.map(f => (
+                <span key={f} className="text-[10px] bg-emerald-500/15 text-emerald-300 border border-emerald-400/20 px-1.5 py-0.5 rounded font-mono">
+                  {FIELD_LABELS[f.toLowerCase()] ?? f.replace(/_/g, " ")}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
 
@@ -502,6 +658,17 @@ export default function DuplicatesList() {
   const [selectedReview, setSelectedReview] = useState<UserReview | null>(null);
   const [page, setPage] = useState(1);
   const [fetchSummary, setFetchSummary] = useState<string | null>(null);
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+
+  const toggleAccordion = (reviewId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setExpandedRows(prev => {
+      const next = new Set(prev);
+      if (next.has(reviewId)) next.delete(reviewId);
+      else next.add(reviewId);
+      return next;
+    });
+  };
 
   // Load user's review queue
   const { data: reviewData, isLoading, refetch } = useQuery({
@@ -733,36 +900,67 @@ export default function DuplicatesList() {
                 ) : (
                   filtered.map(rev => {
                     const p = rev.payment;
+                    const isOpen = expandedRows.has(rev.id);
                     return (
-                      <tr
-                        key={rev.id}
-                        onClick={() => setSelectedReview(rev)}
-                        className="border-b border-white/5 hover:bg-white/4 cursor-pointer transition-colors"
-                      >
-                        <td className="px-4 py-3">
-                          <div className="font-mono text-slate-300 text-[11px]">{p.payment1Id}</div>
-                          <div className="font-mono text-slate-500 text-[10px]">↔ {p.payment2Id}</div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="text-slate-300">{p.paymentSystem}</div>
-                          <div className="text-slate-600 text-[10px]">{p.duplicateType.replace(/_/g, " ")}</div>
-                        </td>
-                        <td className="px-4 py-3 text-slate-300 whitespace-nowrap">
-                          {formatCurrency(p.amount, p.currency)}
-                        </td>
-                        <td className="px-4 py-3">
-                          <ProbabilityBadge probability={p.probability} />
-                        </td>
-                        <td className="px-4 py-3">
-                          <StatusBadge status={rev.status} />
-                        </td>
-                        <td className="px-4 py-3 text-slate-500 whitespace-nowrap">
-                          {p.paymentDate1 ? new Date(p.paymentDate1).toLocaleDateString() : "—"}
-                        </td>
-                        <td className="px-4 py-3">
-                          <ChevronRight className="w-4 h-4 text-slate-600" />
-                        </td>
-                      </tr>
+                      <React.Fragment key={rev.id}>
+                        <tr
+                          onClick={() => setSelectedReview(rev)}
+                          className={`border-b border-white/5 hover:bg-white/4 cursor-pointer transition-colors ${isOpen ? "bg-white/3" : ""}`}
+                        >
+                          {/* Payment IDs cell — click to toggle accordion */}
+                          <td
+                            className="px-4 py-3 group"
+                            onClick={e => toggleAccordion(rev.id, e)}
+                            title="Click to compare payments side by side"
+                          >
+                            <div className="flex items-center gap-1.5">
+                              <div>
+                                <div className="font-mono text-violet-300 text-[11px] group-hover:text-violet-200 transition-colors underline-offset-2 group-hover:underline">{p.payment1Id}</div>
+                                <div className="font-mono text-slate-500 text-[10px] group-hover:text-slate-400 transition-colors">↔ {p.payment2Id}</div>
+                              </div>
+                              {isOpen
+                                ? <ChevronDown className="w-3 h-3 text-violet-400 flex-shrink-0" />
+                                : <ChevronRight className="w-3 h-3 text-slate-600 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+                              }
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="text-slate-300">{p.paymentSystem}</div>
+                            <div className="text-slate-600 text-[10px]">{p.duplicateType.replace(/_/g, " ")}</div>
+                          </td>
+                          <td className="px-4 py-3 text-slate-300 whitespace-nowrap">
+                            {formatCurrency(p.amount, p.currency)}
+                          </td>
+                          <td className="px-4 py-3">
+                            <ProbabilityBadge probability={p.probability} />
+                          </td>
+                          <td className="px-4 py-3">
+                            <StatusBadge status={rev.status} />
+                          </td>
+                          <td className="px-4 py-3 text-slate-500 whitespace-nowrap">
+                            {p.paymentDate1 ? new Date(p.paymentDate1).toLocaleDateString() : "—"}
+                          </td>
+                          <td className="px-4 py-3">
+                            <ChevronRight className="w-4 h-4 text-slate-600" />
+                          </td>
+                        </tr>
+                        {/* Accordion row */}
+                        <AnimatePresence>
+                          {isOpen && (
+                            <motion.tr
+                              key={`${rev.id}-acc`}
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              exit={{ opacity: 0 }}
+                              transition={{ duration: 0.15 }}
+                            >
+                              <td colSpan={7} className="p-0 border-b border-white/5">
+                                <PaymentAccordion payment={p} />
+                              </td>
+                            </motion.tr>
+                          )}
+                        </AnimatePresence>
+                      </React.Fragment>
                     );
                   })
                 )}
