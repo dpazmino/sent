@@ -13,6 +13,8 @@ import {
   Activity,
   ShieldAlert,
   Landmark,
+  BookOpen,
+  GitBranch,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -26,6 +28,11 @@ const NAV_ITEMS = [
   { href: "/training", label: "Agent Training", icon: BrainCircuit },
   { href: "/schema", label: "Data Schema", icon: Database },
   { href: "/chat", label: "AI Graph Chat", icon: MessageSquareText },
+];
+
+const NAV_DOCS = [
+  { href: "/guide", label: "How to Use", icon: BookOpen },
+  { href: "/agents", label: "Agentic Flow", icon: GitBranch },
 ];
 
 export function AppLayout({ children }: { children: ReactNode }) {
@@ -46,29 +53,63 @@ export function AppLayout({ children }: { children: ReactNode }) {
         </div>
       </div>
 
-      <nav className="flex-1 space-y-1.5 px-3">
-        {NAV_ITEMS.map((item) => {
-          const isActive = location === item.href;
-          return (
-            <Link key={item.href} href={item.href}>
-              <div
-                className={cn(
-                  "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 cursor-pointer group relative overflow-hidden",
-                  isActive 
-                    ? "text-primary-foreground bg-primary shadow-lg shadow-primary/25" 
-                    : "text-muted-foreground hover:text-foreground hover:bg-secondary/50"
-                )}
-                onClick={() => setIsMobileMenuOpen(false)}
-              >
-                {isActive && (
-                  <div className="absolute inset-0 bg-gradient-to-r from-white/10 to-transparent pointer-events-none" />
-                )}
-                <item.icon className={cn("w-5 h-5 transition-transform duration-200", isActive ? "" : "group-hover:scale-110")} />
-                {item.label}
-              </div>
-            </Link>
-          );
-        })}
+      <nav className="flex-1 px-3 overflow-y-auto">
+        <div className="space-y-1.5">
+          {NAV_ITEMS.map((item) => {
+            const isActive = location === item.href;
+            return (
+              <Link key={item.href} href={item.href}>
+                <div
+                  className={cn(
+                    "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 cursor-pointer group relative overflow-hidden",
+                    isActive
+                      ? "text-primary-foreground bg-primary shadow-lg shadow-primary/25"
+                      : "text-muted-foreground hover:text-foreground hover:bg-secondary/50"
+                  )}
+                  onClick={() => setIsMobileMenuOpen(false)}
+                >
+                  {isActive && (
+                    <div className="absolute inset-0 bg-gradient-to-r from-white/10 to-transparent pointer-events-none" />
+                  )}
+                  <item.icon className={cn("w-5 h-5 transition-transform duration-200", isActive ? "" : "group-hover:scale-110")} />
+                  {item.label}
+                </div>
+              </Link>
+            );
+          })}
+        </div>
+
+        {/* Docs separator */}
+        <div className="flex items-center gap-2 mt-4 mb-2 px-3">
+          <div className="flex-1 h-px bg-border/40" />
+          <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Docs</span>
+          <div className="flex-1 h-px bg-border/40" />
+        </div>
+
+        <div className="space-y-1.5">
+          {NAV_DOCS.map((item) => {
+            const isActive = location === item.href;
+            return (
+              <Link key={item.href} href={item.href}>
+                <div
+                  className={cn(
+                    "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 cursor-pointer group relative overflow-hidden",
+                    isActive
+                      ? "text-primary-foreground bg-primary shadow-lg shadow-primary/25"
+                      : "text-muted-foreground hover:text-foreground hover:bg-secondary/50"
+                  )}
+                  onClick={() => setIsMobileMenuOpen(false)}
+                >
+                  {isActive && (
+                    <div className="absolute inset-0 bg-gradient-to-r from-white/10 to-transparent pointer-events-none" />
+                  )}
+                  <item.icon className={cn("w-5 h-5 transition-transform duration-200", isActive ? "" : "group-hover:scale-110")} />
+                  {item.label}
+                </div>
+              </Link>
+            );
+          })}
+        </div>
       </nav>
 
       <div className="p-4 mt-auto">

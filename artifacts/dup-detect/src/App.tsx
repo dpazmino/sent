@@ -18,6 +18,8 @@ import MasterConsole from "@/pages/MasterConsole";
 import AgentTraining from "@/pages/AgentTraining";
 import DataSchema from "@/pages/DataSchema";
 import GraphChat from "@/pages/GraphChat";
+import HowToUse from "@/pages/HowToUse";
+import AgentFlow from "@/pages/AgentFlow";
 import NotFound from "@/pages/not-found";
 import LoginPage from "@/pages/LoginPage";
 
@@ -49,6 +51,8 @@ function Router() {
           <Route path="/training" component={AgentTraining} />
           <Route path="/schema" component={DataSchema} />
           <Route path="/chat" component={GraphChat} />
+          <Route path="/guide" component={HowToUse} />
+          <Route path="/agents" component={AgentFlow} />
           <Route component={NotFound} />
         </Switch>
       </AppLayout>
