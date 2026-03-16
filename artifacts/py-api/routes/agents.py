@@ -442,28 +442,20 @@ When the analyst corrects you: "I understand — I'll remember: [corrected one-s
         role="assistant", content=response_text, timestamp=datetime.now(timezone.utc),
     ))
 
-    # Detect analyst feedback and save to memory
+    # Save to memory ONLY when the agent explicitly committed to a rule ("I'll remember: ...")
+    # This prevents hallucinated responses from being saved as confirmed rules.
     memory_saved = False
     memory_key = None
     if message:
-        lower_msg = message.lower()
-        is_feedback = any(w in lower_msg for w in [
-            "agree", "disagree", "correct", "incorrect", "wrong", "right",
-            "not a duplicate", "is a duplicate", "because", "reason", "explain",
-            "this is", "this isn't", "should not", "should be", "remember",
-            "aud", "usd", "eur", "gbp", "currency", "amount",
-        ])
-        if is_feedback:
+        remember_match = _re.search(
+            r"I[''\u2019]ll remember:?\s*(.+?)(?:\n|$)",
+            response_text,
+            _re.IGNORECASE,
+        )
+        if remember_match:
+            distilled_rule = remember_match.group(1).strip()
             words = message.split()[:6]
             memory_key = f"review_{record.payment_system}_{record.duplicate_type}_{'_'.join(w.lower() for w in words if len(w) > 2)[:40]}"
-
-            # Extract the clean distilled rule the agent stated ("I'll remember: ...")
-            remember_match = _re.search(
-                r"I[''\u2019]ll remember:?\s*(.+?)(?:\n|$)",
-                response_text,
-                _re.IGNORECASE,
-            )
-            distilled_rule = remember_match.group(1).strip() if remember_match else response_text[:200]
 
             # Save as clean "Rule: ..." format so _extract_distilled_rule() picks it up perfectly
             clean_content = (
@@ -472,7 +464,7 @@ When the analyst corrects you: "I understand — I'll remember: [corrected one-s
                 f"analyst said: '{message[:200]}'"
             )
 
-            # Check if a record with this key already exists; if so, update it
+            # Upsert: update existing record with this key, or insert new
             existing = db.query(AgentMemoryRecord).filter(AgentMemoryRecord.key == memory_key).first()
             if existing:
                 existing.content = clean_content
