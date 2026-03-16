@@ -52,15 +52,30 @@ Every package extends `tsconfig.base.json` which sets `composite: true`. The roo
 
 ### `artifacts/api-server` (`@workspace/api-server`)
 
-Express 5 API server. Routes live in `src/routes/` and use `@workspace/api-zod` for request and response validation and `@workspace/db` for persistence.
+Express 5 API server. This is the **Sentinel** backend — a full AI-powered duplicate payment detection platform.
 
-- Entry: `src/index.ts` — reads `PORT`, starts Express
-- App setup: `src/app.ts` — mounts CORS, JSON/urlencoded parsing, routes at `/api`
-- Routes: `src/routes/index.ts` mounts sub-routers; `src/routes/health.ts` exposes `GET /health` (full path: `/api/health`)
-- Depends on: `@workspace/db`, `@workspace/api-zod`
-- `pnpm --filter @workspace/api-server run dev` — run the dev server
-- `pnpm --filter @workspace/api-server run build` — production esbuild bundle (`dist/index.cjs`)
-- Build bundles an allowlist of deps (express, cors, pg, drizzle-orm, zod, etc.) and externalizes the rest
+- Entry: `src/index.ts` — reads `PORT`, starts Express (no Python spawn)
+- App setup: `src/app.ts` — mounts the full Sentinel API at both `/api` and `/py-api`
+- Routes: `src/routes/index.ts` mounts utility routes; `src/py-api/` contains the full Sentinel implementation
+- `pnpm --filter @workspace/api-server run dev` — run the dev server (tsx)
+
+**Sentinel API (`src/py-api/`):**
+- `db.ts` — raw SQL query helpers using `pg` Pool (DATABASE_URL)
+- `agents/base.ts` — LangGraph.js/LangChain.js base utilities (getLLM, buildAgentGraph)
+- `agents/masterAgent.ts` — Master orchestrator agent (gpt-4o-mini, 20yr banking expert persona)
+- `agents/detectorAgents.ts` — 5 specialist detector agents (SWIFT, ACH, MultiSource, FuzzyMatch, PatternAnalysis)
+- `agents/reviewAgent.ts` — Per-analyst review agent with MemorySaver persistent memory keyed by user_id
+- `agents/trainingAgent.ts` — Training agent with MemorySaver keyed by session_id
+- `agents/textToSqlAgent.ts` — Text-to-SQL and Chart/Graph spec generation agents
+- Routes: `routes/health.ts`, `routes/dashboard.ts`, `routes/duplicates.ts`, `routes/payments.ts`, `routes/schema.ts`, `routes/exports.ts`, `routes/training.ts`, `routes/userReviews.ts`, `routes/agents.ts`, `routes/console.ts`
+
+**AI Integration:** Uses Replit AI Integrations proxy for OpenAI (`AI_INTEGRATIONS_OPENAI_BASE_URL`, `AI_INTEGRATIONS_OPENAI_API_KEY`), model `gpt-4o-mini`. Falls back to `OPENAI_API_KEY` if present.
+
+**Database tables (PostgreSQL):** `dup_duplicate_payments`, `dup_users`, `dup_user_reviews`, `dup_user_review_messages`, `dup_agent_memory`, `dup_training_sessions`, `dup_training_messages`, `dup_conversations`, `dup_conversation_messages`, `dup_data_source_schemas`, `dup_scan_records`, `dup_payments`.
+
+**Predefined users:** 10 analyst profiles (alice_chen through james_taylor, user_1 through user_10) hardcoded in `db.ts`.
+
+- Depends on: `@workspace/db`, `@workspace/api-zod`, `@langchain/langgraph`, `@langchain/openai`, `@langchain/core`, `pg`, `uuid`
 
 ### `lib/db` (`@workspace/db`)
 
