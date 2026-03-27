@@ -6,3 +6,9 @@ id = "DPRohAS8nl0Fl8q6zYIX7"
 uri = "file://AGENT_FLOW.md"
 type = "text"
 title = "Agent & Data Flow Reference"
+
+[[outputs]]
+id = "oHMbIw_ivU3td9csJ3Q1f"
+uri = "file://DATABASE.md"
+type = "text"
+title = "Sentinel — Database Reference"
